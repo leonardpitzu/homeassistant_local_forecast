@@ -516,8 +516,12 @@ cards:
 The weather entity condition maps directly to ESPHome pixel icon names.
 The integration already handles day/night (sunny vs clear-night), precipitation
 type (rain/snow/sleet via wet-bulb temperature), and storms — so the template
-is a simple one-to-one map with one extra rule: partly cloudy gets a dedicated
-night icon (`weather_cloudy_night`) since the firmware supports it.
+is a simple one-to-one map with night overrides for conditions that have
+dedicated night icons in the firmware (`weather_cloudy_night`, `weather_rainy_night`).
+
+**Important:** The Jinja template uses `{%- -%}` whitespace control on every
+tag.  Without it, the `{% if %}` / `{% set %}` blocks inject leading spaces
+and newlines into the rendered icon name, and EspHoMaTriXv2 cannot match it.
 
 ```yaml
 alias: pixel forecast
@@ -535,9 +539,9 @@ actions:
     data:
       default_font: true
       icon_name: >-
-        {% set cond = states('weather.local_weather_forecast') %}
-        {% set is_night = is_state('sun.sun', 'below_horizon') %}
-        {% set map = {
+        {%- set cond = states('weather.local_weather_forecast') -%}
+        {%- set is_night = is_state('sun.sun', 'below_horizon') -%}
+        {%- set map = {
           'sunny':           'weather_sunny',
           'clear-night':     'weather_clear_night',
           'partlycloudy':    'weather_partly_cloudy',
@@ -550,12 +554,14 @@ actions:
           'lightning-rainy': 'weather_lightning_rainy',
           'windy':           'weather_windy',
           'exceptional':     'weather_cloudy',
-        } %}
-        {% if cond == 'partlycloudy' and is_night %}
-          weather_cloudy_night
-        {% else %}
-          {{ map.get(cond, 'weather_cloudy') }}
-        {% endif %}|forecast
+        } -%}
+        {%- set night = {
+          'partlycloudy': 'weather_cloudy_night',
+          'rainy':        'weather_rainy_night',
+        } -%}
+        {%- set icon = night.get(cond, map.get(cond, 'weather_cloudy'))
+            if is_night else map.get(cond, 'weather_cloudy') -%}
+        {{ icon }}|forecast
       text: "{{ states('sensor.local_weather_forecast_1h_forecast') }}"
       lifetime: 1440
       screen_time: 5
