@@ -1,0 +1,11 @@
+{
+  "domain": "local_forecast",
+  "name": "Local Weather Forecast",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/leonardpitu/homeassistant-local-weather-forecast",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/leonardpitu/homeassistant-local-weather-forecast/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

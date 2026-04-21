@@ -1,0 +1,21 @@
+# Testing dependencies for Local Weather Forecast integration
+pytest>=9.0.0
+pytest-asyncio>=0.24.0
+pytest-cov>=6.0.0
+
+# Fix for Python 3.13 compatibility
+pycares>=4.4.0  # Required for aiodns/aiohttp with Python 3.13
+aiodns>=3.2.0  # Python 3.13 compatible version
+
+# SQLAlchemy - required by Home Assistant recorder component
+sqlalchemy>=2.0.0  # Required for homeassistant.components.recorder
+
+# Code quality (optional)
+# pylint>=3.0.0
+# black>=24.0.0
+# isort>=5.13.0
+# mypy>=1.8.0
+
+# Optional but recommended
+pytest-timeout>=2.3.0  # Timeout for hanging tests
+

@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Local Weather Forecast",
+        "description": "Configure sensor sources for the Bayesian local weather forecaster.",
+        "data": {
+          "pressure_sensor": "Pressure sensor",
+          "temperature_sensor": "Temperature sensor",
+          "humidity_sensor": "Humidity sensor (optional)",
+          "wind_speed_sensor": "Wind speed sensor (optional)",
+          "wind_direction_sensor": "Wind direction sensor (optional)",
+          "solar_radiation_sensor": "Solar radiation sensor (optional)",
+          "rain_rate_sensor": "Rain rate sensor (optional)",
+          "elevation": "Station elevation (m)",
+          "pressure_type": "Pressure type"
+        }
+      }
+    },
+    "error": {
+      "sensor_not_found": "Sensor entity not found",
+      "invalid_elevation": "Elevation must be positive"
+    }
+  }
+}
