@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.components.weather import (
     Forecast,
@@ -390,6 +390,13 @@ class LocalForecastWeather(WeatherEntity):
     #  templates / automations / pixel display)
     # ------------------------------------------------------------------
 
+    _BEAUFORT_NAMES: Final = (
+        "Calm", "Light air", "Light breeze", "Gentle breeze",
+        "Moderate breeze", "Fresh breeze", "Strong breeze",
+        "Near gale", "Gale", "Strong gale", "Storm",
+        "Violent storm", "Hurricane force",
+    )
+
     @staticmethod
     def _beaufort(wind_ms: float) -> int:
         """Convert wind speed in m/s to Beaufort scale (0-12)."""
@@ -412,6 +419,7 @@ class LocalForecastWeather(WeatherEntity):
             "dew_depression": s.dew_depression,
             "wet_bulb": s.wet_bulb,
             "wind_force": self._beaufort(s.wind_speed),
+            "wind_force_description": self._BEAUFORT_NAMES[self._beaufort(s.wind_speed)],
             "front_warm": s.front_warm,
             "front_cold": s.front_cold,
             "front_occluded": s.front_occluded,

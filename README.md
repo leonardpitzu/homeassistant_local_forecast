@@ -38,23 +38,23 @@ Seasons, time of day, and conditions all matter.
 
 ```
  Sensors                 State Estimator              Bayesian Forecaster
-+-----------+          +-------------------+        +----------------------+
-| pressure  |--+       | Kalman smoother   |        | 12x12 Markov matrix  |
-| temp      |--+       | dp/dt, d2p/dt2    |        | Evidence updates     |
-| humidity  |--+-----> | dT/dt, dH/dt      |------> | Physical constraints |
-| wind      |--+       | Wet-bulb calc     |        | Physics models       |
-| rain      |--+       | Frontal detection |        | Day/night swap       |
-| solar     |--+       | State classify    |        |                      |
-+-----------+          +-------------------+        +----------+-----------+
++-----------+          +-------------------+        +-----------------------+
+| pressure  |--+       | Kalman smoother   |        | 12x12 Markov matrix   |
+| temp      |--+       | dp/dt, d2p/dt2    |        | Evidence updates      |
+| humidity  |--+-----> | dT/dt, dH/dt      |------> | Physical constraints  |
+| wind      |--+       | Wet-bulb calc     |        | Physics models        |
+| rain      |--+       | Frontal detection |        | Day/night swap        |
+| solar     |--+       | State classify    |        |                       |
++-----------+          +-------------------+        +----------+------------+
                                                                |
-                                                    +----------v-----------+
+                                                    +----------v------------+
                                                     | weather.local_forecast|
-                                                    |                      |
-                                                    | condition + icon     |
-                                                    | 12h hourly forecast  |
-                                                    | daily forecast       |
-                                                    | rich attributes      |
-                                                    +----------------------+
+                                                    |                       |
+                                                    | condition + icon      |
+                                                    | 12h hourly forecast   |
+                                                    | daily forecast        |
+                                                    | rich attributes       |
+                                                    +-----------------------+
 ```
 
 All modules except `weather.py` are pure Python with no HA dependencies.
@@ -245,6 +245,8 @@ Physical impossibilities are zeroed out:
 | `dew_point` | float | Degrees C |
 | `dew_depression` | float | $T - T_d$ in C |
 | `wet_bulb` | float | Degrees C |
+| `wind_force` | int | Beaufort number (0-12) |
+| `wind_force_description` | str | Beaufort name (e.g. "Gentle breeze") |
 | `front_warm` | bool | Warm front detected |
 | `front_cold` | bool | Cold front detected |
 | `front_occluded` | bool | Occluded front detected |
