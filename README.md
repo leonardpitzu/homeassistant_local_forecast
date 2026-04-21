@@ -38,23 +38,23 @@ Seasons, time of day, and conditions all matter.
 
 ```
  Sensors                 State Estimator              Bayesian Forecaster
-+-----------+          +-------------------+        +-----------------------+
-| pressure  |--+       | Kalman smoother   |        | 12x12 Markov matrix   |
-| temp      |--+       | dp/dt, d2p/dt2    |        | Evidence updates      |
-| humidity  |--+-----> | dT/dt, dH/dt      |------> | Physical constraints  |
-| wind      |--+       | Wet-bulb calc     |        | Physics models        |
-| rain      |--+       | Frontal detection |        | Day/night swap        |
-| solar     |--+       | State classify    |        |                       |
-+-----------+          +-------------------+        +----------+------------+
++-----------+          +-------------------+        +-------------------------------+
+| pressure  |--+       | Kalman smoother   |        | 12x12 Markov matrix           |
+| temp      |--+       | dp/dt, d2p/dt2    |        | Evidence updates              |
+| humidity  |--+-----> | dT/dt, dH/dt      |------> | Physical constraints          |
+| wind      |--+       | Wet-bulb calc     |        | Physics models                |
+| rain      |--+       | Frontal detection |        | Day/night swap                |
+| solar     |--+       | State classify    |        |                               |
++-----------+          +-------------------+        +----------+--------------------+
                                                                |
-                                                    +----------v------------+
-                                                    | weather.local_forecast|
-                                                    |                       |
-                                                    | condition + icon      |
-                                                    | 12h hourly forecast   |
-                                                    | daily forecast        |
-                                                    | rich attributes       |
-                                                    +-----------------------+
+                                                    +----------v--------------------+
+                                                    | weather.local_weather_forecast|
+                                                    |                               |
+                                                    | condition + icon              |
+                                                    | 12h hourly forecast           |
+                                                    | daily forecast                |
+                                                    | rich attributes               |
+                                                    +-------------------------------+
 ```
 
 All modules except `weather.py` are pure Python with no HA dependencies.
@@ -274,9 +274,9 @@ and can be graphed in tile cards, used in badges, and referenced in automations.
 
 | Entity | Unit | Description |
 |---|---|---|
-| `sensor.local_forecast_precipitation_probability` | % | Probability of rain in the next 6 hours |
-| `sensor.local_forecast_1h_forecast` | — | Forecast condition for +1h (human-readable text) |
-| `sensor.local_forecast_next_hour_precipitation_probability` | % | Precipitation probability for +1h |
+| `sensor.local_weather_forecast_precipitation_probability` | % | Probability of rain in the next 6 hours |
+| `sensor.local_weather_forecast_1h_forecast` | — | Forecast condition for +1h (human-readable text) |
+| `sensor.local_weather_forecast_next_hour_precipitation_probability` | % | Precipitation probability for +1h |
 
 All sensors update automatically when the weather entity recalculates.
 The `%` sensors have `state_class: measurement` so HA records long-term
@@ -302,7 +302,7 @@ in tile cards.
 
 **Manual**
 
-Copy `custom_components/local_forecast/` into your HA `config/custom_components/` directory and restart.
+Copy `custom_components/local_weather_forecast/` into your HA `config/custom_components/` directory and restart.
 
 ### Configuration
 
@@ -355,14 +355,14 @@ precipitation type, day/night, and all 12 conditions internally.
 type: vertical-stack
 cards:
   - type: weather-forecast
-    entity: weather.local_forecast
+    entity: weather.local_weather_forecast
     show_current: true
     show_forecast: true
     forecast_type: hourly
     forecast_slots: 6
 
   - type: weather-forecast
-    entity: weather.local_forecast
+    entity: weather.local_weather_forecast
     show_current: false
     show_forecast: true
     forecast_type: daily
@@ -375,7 +375,7 @@ can show a trend graph natively — no extra integrations needed:
 
 ```yaml
 type: tile
-entity: sensor.local_forecast_precipitation_probability
+entity: sensor.local_weather_forecast_precipitation_probability
 features:
   - type: graph
     days_to_show: 1
@@ -387,8 +387,8 @@ Native HA badges appear at the top of a dashboard view:
 
 ```yaml
 badges:
-  - entity: sensor.local_forecast_1h_forecast
-  - entity: sensor.local_forecast_precipitation_probability
+  - entity: sensor.local_weather_forecast_1h_forecast
+  - entity: sensor.local_weather_forecast_precipitation_probability
 ```
 
 ### Adding pressure trend and frontal alerts
@@ -399,13 +399,13 @@ add a markdown card below the weather cards:
 ```yaml
   - type: markdown
     content: >-
-      **Pressure:** {{ state_attr('weather.local_forecast', 'pressure') | round(1) }} hPa
-      ({{ state_attr('weather.local_forecast', 'pressure_trend') | round(1) }} hPa/h)
-      {% if state_attr('weather.local_forecast', 'front_warm') %} | Warm front{% endif %}
-      {% if state_attr('weather.local_forecast', 'front_cold') %} | Cold front{% endif %}
-      {% if state_attr('weather.local_forecast', 'front_occluded') %} | Occluded front{% endif %}
-      | Wet-bulb: {{ state_attr('weather.local_forecast', 'wet_bulb') }}°C
-      | 6h rain: {{ state_attr('weather.local_forecast', 'precip_probability_6h') | default(0) }}%
+      **Pressure:** {{ state_attr('weather.local_weather_forecast', 'pressure') | round(1) }} hPa
+      ({{ state_attr('weather.local_weather_forecast', 'pressure_trend') | round(1) }} hPa/h)
+      {% if state_attr('weather.local_weather_forecast', 'front_warm') %} | Warm front{% endif %}
+      {% if state_attr('weather.local_weather_forecast', 'front_cold') %} | Cold front{% endif %}
+      {% if state_attr('weather.local_weather_forecast', 'front_occluded') %} | Occluded front{% endif %}
+      | Wet-bulb: {{ state_attr('weather.local_weather_forecast', 'wet_bulb') }}°C
+      | 6h rain: {{ state_attr('weather.local_weather_forecast', 'precip_probability_6h') | default(0) }}%
 ```
 
 ### Standard weather card
@@ -414,7 +414,7 @@ Works out of the box:
 
 ```yaml
 type: weather-forecast
-entity: weather.local_forecast
+entity: weather.local_weather_forecast
 forecast_type: hourly
 ```
 
@@ -429,16 +429,16 @@ cards:
   - type: custom:mushroom-title-card
     title: Local Weather Forecast
     subtitle: >-
-      {{ states('weather.local_forecast') | replace('-', ' ') | title }}
+      {{ states('weather.local_weather_forecast') | replace('-', ' ') | title }}
 
   - type: horizontal-stack
     cards:
       - type: custom:mushroom-template-card
         primary: Now
         secondary: >-
-          {{ state_attr('weather.local_forecast', 'temperature') | round }}°C
+          {{ state_attr('weather.local_weather_forecast', 'temperature') | round }}°C
         icon: >-
-          {% set c = states('weather.local_forecast') %}
+          {% set c = states('weather.local_weather_forecast') %}
           {% set m = {
             'sunny': 'mdi:weather-sunny',
             'clear-night': 'mdi:weather-night',
@@ -455,15 +455,15 @@ cards:
           } %}
           {{ m.get(c, 'mdi:weather-partly-cloudy') }}
         icon_color: >-
-          {% set pp = state_attr('weather.local_forecast', 'next_hour_precip_probability') | int(0) %}
+          {% set pp = state_attr('weather.local_weather_forecast', 'next_hour_precip_probability') | int(0) %}
           {% if pp > 70 %}red{% elif pp > 40 %}orange{% elif pp > 20 %}yellow{% else %}blue{% endif %}
         layout: vertical
 
       - type: custom:mushroom-template-card
         primary: +1h
         secondary: >-
-          {{ state_attr('weather.local_forecast', 'next_hour_condition') | replace('-', ' ') | title }}
-          {{ state_attr('weather.local_forecast', 'next_hour_precip_probability') }}% precip
+          {{ state_attr('weather.local_weather_forecast', 'next_hour_condition') | replace('-', ' ') | title }}
+          {{ state_attr('weather.local_weather_forecast', 'next_hour_precip_probability') }}% precip
         icon: mdi:clock-outline
         icon_color: orange
         layout: vertical
@@ -473,20 +473,20 @@ cards:
       - type: custom:mushroom-template-card
         primary: Pressure
         secondary: >-
-          {{ state_attr('weather.local_forecast', 'pressure') | round(1) }} hPa
+          {{ state_attr('weather.local_weather_forecast', 'pressure') | round(1) }} hPa
         icon: >-
-          {% set dp = state_attr('weather.local_forecast', 'pressure_trend') | float(0) %}
+          {% set dp = state_attr('weather.local_weather_forecast', 'pressure_trend') | float(0) %}
           {% if dp > 0.5 %}mdi:trending-up{% elif dp < -0.5 %}mdi:trending-down{% else %}mdi:trending-neutral{% endif %}
         icon_color: >-
-          {% set dp = state_attr('weather.local_forecast', 'pressure_trend') | float(0) %}
+          {% set dp = state_attr('weather.local_weather_forecast', 'pressure_trend') | float(0) %}
           {% if dp < -1.5 %}red{% elif dp < -0.5 %}orange{% elif dp > 0.5 %}green{% else %}blue{% endif %}
         layout: vertical
 
       - type: custom:mushroom-template-card
         primary: Humidity
         secondary: >-
-          {{ state_attr('weather.local_forecast', 'humidity') }}%
-          (Dew {{ state_attr('weather.local_forecast', 'dew_point') }}°C)
+          {{ state_attr('weather.local_weather_forecast', 'humidity') }}%
+          (Dew {{ state_attr('weather.local_weather_forecast', 'dew_point') }}°C)
         icon: mdi:water-percent
         icon_color: teal
         layout: vertical
@@ -495,13 +495,13 @@ cards:
     chips:
       - type: template
         content: >-
-          {% if state_attr('weather.local_forecast', 'front_warm') %}Warm front{% elif state_attr('weather.local_forecast', 'front_cold') %}Cold front{% elif state_attr('weather.local_forecast', 'front_occluded') %}Occluded{% else %}No front{% endif %}
+          {% if state_attr('weather.local_weather_forecast', 'front_warm') %}Warm front{% elif state_attr('weather.local_weather_forecast', 'front_cold') %}Cold front{% elif state_attr('weather.local_weather_forecast', 'front_occluded') %}Occluded{% else %}No front{% endif %}
       - type: template
         content: >-
-          6h rain: {{ state_attr('weather.local_forecast', 'precip_probability_6h') | default(0) }}%
+          6h rain: {{ state_attr('weather.local_weather_forecast', 'precip_probability_6h') | default(0) }}%
       - type: template
         content: >-
-          Feels {{ state_attr('weather.local_forecast', 'apparent_temperature') | round }}°C
+          Feels {{ state_attr('weather.local_weather_forecast', 'apparent_temperature') | round }}°C
 ```
 
 </details>
@@ -513,44 +513,60 @@ cards:
 <details>
 <summary>ESPHome pixel display automation with icon mapping</summary>
 
-The weather entity condition maps directly to ESPHome icon names:
+The weather entity condition maps directly to ESPHome pixel icon names.
+The integration already handles day/night (sunny vs clear-night), precipitation
+type (rain/snow/sleet via wet-bulb temperature), and storms — so the template
+is a simple one-to-one map with one extra rule: partly cloudy gets a dedicated
+night icon (`weather_cloudy_night`) since the firmware supports it.
 
 ```yaml
-automation:
-  - alias: "Pixel display weather icon"
-    trigger:
-      - platform: state
-        entity_id: weather.local_forecast
-    action:
-      - action: esphome.pixel_icon_screen
-        data:
-          icon_name: >-
-            {% set map = {
-              'sunny':           'weather_sunny',
-              'clear-night':     'weather_clear_night',
-              'partlycloudy':    'weather_partly_cloudy',
-              'cloudy':          'weather_cloudy',
-              'fog':             'weather_fog',
-              'rainy':           'weather_rainy',
-              'pouring':         'weather_pouring',
-              'snowy':           'weather_snowy',
-              'snowy-rainy':     'weather_snowy_rainy',
-              'lightning-rainy': 'weather_lightning',
-              'windy':           'weather_windy',
-              'exceptional':     'weather_exceptional',
-            } %}
-            {{ map.get(states('weather.local_forecast'), 'weather_cloudy') }}
-          text: >-
-            {{ state_attr('weather.local_forecast', 'temperature') | round }}°
-          lifetime: 300
-          switch_time: 10
+alias: pixel forecast
+description: Weather icon and 1h forecast text for ESPHome pixel display
+triggers:
+  - entity_id: binary_sensor.pixel_status
+    to: "on"
+    trigger: state
+  - entity_id: weather.local_weather_forecast
+    trigger: state
+  - minutes: /10
+    trigger: time_pattern
+actions:
+  - action: esphome.pixel_icon_screen
+    data:
+      default_font: true
+      icon_name: >-
+        {% set cond = states('weather.local_weather_forecast') %}
+        {% set is_night = is_state('sun.sun', 'below_horizon') %}
+        {% set map = {
+          'sunny':           'weather_sunny',
+          'clear-night':     'weather_clear_night',
+          'partlycloudy':    'weather_partly_cloudy',
+          'cloudy':          'weather_cloudy',
+          'fog':             'weather_fog',
+          'rainy':           'weather_rainy',
+          'pouring':         'weather_pouring',
+          'snowy':           'weather_snowy',
+          'snowy-rainy':     'weather_snowy_rainy',
+          'lightning-rainy': 'weather_lightning_rainy',
+          'windy':           'weather_windy',
+          'exceptional':     'weather_cloudy',
+        } %}
+        {% if cond == 'partlycloudy' and is_night %}
+          weather_cloudy_night
+        {% else %}
+          {{ map.get(cond, 'weather_cloudy') }}
+        {% endif %}|forecast
+      text: "{{ states('sensor.local_weather_forecast_1h_forecast') }}"
+      lifetime: 1440
+      screen_time: 5
+      r: 200
+      g: 200
+      b: 200
+mode: single
 ```
 
-Or shorter — use the condition directly since it already matches standard weather icon naming:
-
-```yaml
-          icon_name: "weather_{{ states('weather.local_forecast') | replace('-', '_') }}"
-```
+The `|forecast` suffix is the screen name on the pixel device.
+Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 </details>
 
@@ -605,7 +621,7 @@ Add the following to your `configuration.yaml` and restart Home Assistant:
 logger:
   default: info
   logs:
-    custom_components.local_forecast: debug
+    custom_components.local_weather_forecast: debug
 ```
 
 ### Option 2 — Home Assistant UI
