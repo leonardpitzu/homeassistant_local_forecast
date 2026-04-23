@@ -429,7 +429,9 @@ cards:
   - type: custom:mushroom-title-card
     title: Local Weather Forecast
     subtitle: >-
-      {{ states('weather.local_weather_forecast') | replace('-', ' ') | title }}
+      {% set c = states('weather.local_weather_forecast') %}
+      {% set labels = {'partlycloudy':'Partly Cloudy','clear-night':'Clear Night','snowy-rainy':'Snowy Rainy','lightning-rainy':'Lightning Rainy'} %}
+      {{ labels.get(c, c | replace('-', ' ') | title) }}
 
   - type: horizontal-stack
     cards:
@@ -462,7 +464,9 @@ cards:
       - type: custom:mushroom-template-card
         primary: +1h
         secondary: >-
-          {{ state_attr('weather.local_weather_forecast', 'next_hour_condition') | replace('-', ' ') | title }}
+          {% set c = state_attr('weather.local_weather_forecast', 'next_hour_condition') %}
+          {% set labels = {'partlycloudy':'Partly Cloudy','clear-night':'Clear Night','snowy-rainy':'Snowy Rainy','lightning-rainy':'Lightning Rainy'} %}
+          {{ labels.get(c, c | replace('-', ' ') | title) }}
           {{ state_attr('weather.local_weather_forecast', 'next_hour_precip_probability') }}% precip
         icon: mdi:clock-outline
         icon_color: orange

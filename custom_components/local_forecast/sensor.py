@@ -19,6 +19,22 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import DOMAIN
 
+# HA condition string → human-readable label
+_CONDITION_LABELS: dict[str, str] = {
+    "sunny": "Sunny",
+    "clear-night": "Clear Night",
+    "partlycloudy": "Partly Cloudy",
+    "cloudy": "Cloudy",
+    "fog": "Fog",
+    "rainy": "Rainy",
+    "pouring": "Pouring",
+    "snowy": "Snowy",
+    "snowy-rainy": "Snowy Rainy",
+    "lightning-rainy": "Lightning Rainy",
+    "windy": "Windy",
+    "exceptional": "Exceptional",
+}
+
 # HA condition string → MDI icon
 _CONDITION_ICONS: dict[str, str] = {
     "sunny": "mdi:weather-sunny",
@@ -139,7 +155,7 @@ class NextHourConditionSensor(_ForecastSensorBase):
         attrs = self._weather.extra_state_attributes
         val = attrs.get("next_hour_condition")
         if val:
-            return val.replace("-", " ").title()
+            return _CONDITION_LABELS.get(val, val.replace("-", " ").title())
         return None
 
     @property
