@@ -253,11 +253,12 @@ class LocalForecastWeather(WeatherEntity):
 
         # Day/night from sun entity
         sunrise_h, sunset_h = self._sun_hours()
+        sun_el = self._sun_elevation()
         now_h = dt_util.now().hour + dt_util.now().minute / 60.0
         s.is_night = not (sunrise_h <= now_h < sunset_h)
 
         # Current state classification
-        current_idx = self._estimator.classify()
+        current_idx = self._estimator.classify(sun_el)
 
         _LOGGER.debug(
             "Pipeline: P=%.1f dp/dt=%.2f T=%.1f RH=%.0f wind=%.1f "
@@ -267,7 +268,7 @@ class LocalForecastWeather(WeatherEntity):
         )
 
         # Cloud fraction for temperature model
-        cloud = self._estimator._estimate_cloud_fraction()
+        cloud = self._estimator._estimate_cloud_fraction(sun_el)
 
         # Physics models
         temp_model = TemperatureModel(
@@ -305,6 +306,18 @@ class LocalForecastWeather(WeatherEntity):
                 h1.temperature, h1.precipitation_probability,
             )
 
+    def _sun_elevation(self) -> float:
+        """Return current sun elevation in degrees from sun.sun entity."""
+        sun = self.hass.states.get("sun.sun")
+        if sun:
+            try:
+                el = sun.attributes.get("elevation")
+                if el is not None:
+                    return float(el)
+            except (ValueError, TypeError):
+                pass
+        return 45.0  # fallback: assume mid-sky
+
     def _sun_hours(self) -> tuple[float, float]:
         """Return (sunrise_hour, sunset_hour) in local decimal hours."""
         sun = self.hass.states.get("sun.sun")
@@ -334,7 +347,8 @@ class LocalForecastWeather(WeatherEntity):
 
     @property
     def condition(self) -> str | None:
-        return HA_CONDITIONS[self._estimator.classify()]
+        sun_el = self._sun_elevation()
+        return HA_CONDITIONS[self._estimator.classify(sun_el)]
 
     @property
     def native_temperature(self) -> float | None:

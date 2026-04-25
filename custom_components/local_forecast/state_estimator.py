@@ -167,7 +167,7 @@ class StateEstimator:
     #  Classify current weather into one of 12 HA condition indices
     # ------------------------------------------------------------------
 
-    def classify(self) -> int:
+    def classify(self, sun_elevation_deg: float = 90.0) -> int:
         """Return the state index that best describes current conditions.
 
         Priority chain (highest first):
@@ -211,7 +211,7 @@ class StateEstimator:
             return S_WINDY
 
         # --- 7 & 8: Cloud cover + day/night ---
-        cloud = self._estimate_cloud_fraction()
+        cloud = self._estimate_cloud_fraction(sun_elevation_deg)
 
         if cloud < 0.15:
             return S_CLEAR_NIGHT if s.is_night else S_CLEAR
@@ -266,12 +266,18 @@ class StateEstimator:
         t_now = now.timestamp
 
         ref = self._find_nearest(t_now - 3600)  # ~1 h ago
+        if ref is None and len(self._history) >= 3:
+            # Startup fallback: use oldest available reading so trends
+            # are not stuck at zero for the first hour after restart.
+            ref = self._history[0]
         if ref is not None:
             dt_h = max(0.1, (t_now - ref.timestamp) / 3600)
-            self._state.dp_dt = (self._state.pressure - ref.pressure_hpa) / dt_h
-            self._state.dt_dt = (self._state.temperature - ref.temperature_c) / dt_h
-            if ref.humidity_pct is not None:
-                self._state.dh_dt = (self._state.humidity - ref.humidity_pct) / dt_h
+            # Use raw readings for both endpoints to avoid Kalman
+            # warm-up artefacts (filter starts at x=0).
+            self._state.dp_dt = (now.pressure_hpa - ref.pressure_hpa) / dt_h
+            self._state.dt_dt = (now.temperature_c - ref.temperature_c) / dt_h
+            if ref.humidity_pct is not None and now.humidity_pct is not None:
+                self._state.dh_dt = (now.humidity_pct - ref.humidity_pct) / dt_h
 
         # Pressure acceleration from 3-h window
         ref3 = self._find_nearest(t_now - 10800)
@@ -359,33 +365,47 @@ class StateEstimator:
             return None
         return best
 
-    def _estimate_cloud_fraction(self) -> float:
-        """Blend solar-radiation and humidity signals into 0-1 cloud fraction."""
+    def _estimate_cloud_fraction(
+        self, sun_elevation_deg: float = 90.0
+    ) -> float:
+        """Blend solar-radiation and dew-depression signals into 0-1 cloud fraction.
+
+        Solar path uses Beer-Lambert clear-sky irradiance scaled by sun
+        elevation so that morning/evening readings are not mistaken for
+        overcast skies.  The fallback (night or no solar sensor) uses
+        dew-point depression, which is a better cloud proxy than raw
+        humidity because it is independent of temperature-sensor bias.
+        """
         sol = self._state.solar_radiation
-        hum = self._state.humidity
+        dd = self._state.dew_depression
 
-        # Solar-based estimate (only meaningful during daytime)
-        if sol > 10.0:
-            # Crude clear-sky ceiling — good enough for fraction estimate.
-            # A proper model would use latitude+time, but we only need
-            # "is it significantly dimmer than it should be?"
-            ratio = min(1.0, sol / 800.0)
+        # --- Solar-based estimate (Beer-Lambert clear-sky model) ---
+        solar_cloud: float | None = None
+        if sol > 10.0 and sun_elevation_deg > 3.0:
+            el_rad = math.radians(sun_elevation_deg)
+            air_mass = 1.0 / math.sin(el_rad)
+            # I_clear = S₀ × τ^(AM^0.678) × sin(α)
+            # S₀=1361 W/m², τ=0.72 (typical clear-sky transmittance)
+            clear_sky = 1361.0 * (0.72 ** (air_mass ** 0.678)) * math.sin(el_rad)
+            clear_sky = max(50.0, clear_sky)
+            ratio = min(1.0, sol / clear_sky)
             solar_cloud = 1.0 - ratio
-        else:
-            solar_cloud = None
 
-        # Humidity-based estimate (works day and night)
-        if hum < 40:
-            hum_cloud = 0.05
-        elif hum < 60:
-            hum_cloud = 0.05 + (hum - 40) / 20 * 0.25
-        elif hum < 75:
-            hum_cloud = 0.30 + (hum - 60) / 15 * 0.30
-        elif hum < 90:
-            hum_cloud = 0.60 + (hum - 75) / 15 * 0.25
+        # --- Dew-depression-based estimate (works day and night) ---
+        # Dew depression (T − Td) is a direct proxy for saturation deficit.
+        # Small dd → air near saturation → cloud / fog likely.
+        # Large dd → dry air → clear sky.
+        if dd > 8.0:
+            dd_cloud = 0.05
+        elif dd > 5.0:
+            dd_cloud = 0.05 + (8.0 - dd) / 3.0 * 0.20
+        elif dd > 3.0:
+            dd_cloud = 0.25 + (5.0 - dd) / 2.0 * 0.30
+        elif dd > 1.5:
+            dd_cloud = 0.55 + (3.0 - dd) / 1.5 * 0.25
         else:
-            hum_cloud = 0.85 + (hum - 90) / 10 * 0.15
+            dd_cloud = 0.80 + max(0.0, 1.5 - dd) / 1.5 * 0.20
 
         if solar_cloud is not None:
-            return max(0.0, min(1.0, 0.7 * solar_cloud + 0.3 * hum_cloud))
-        return max(0.0, min(1.0, hum_cloud))
+            return max(0.0, min(1.0, 0.6 * solar_cloud + 0.4 * dd_cloud))
+        return max(0.0, min(1.0, dd_cloud))
