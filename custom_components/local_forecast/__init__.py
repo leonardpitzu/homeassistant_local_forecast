@@ -21,8 +21,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {"config": entry.data}
 
     # Weather must be set up before Sensor (sensor reads weather_entity)
-    await hass.config_entries.async_forward_entry_setup(entry, Platform.WEATHER)
-    await hass.config_entries.async_forward_entry_setup(entry, Platform.SENSOR)
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.WEATHER])
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 
