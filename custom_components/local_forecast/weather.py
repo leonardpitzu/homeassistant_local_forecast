@@ -31,7 +31,7 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .bayesian_forecaster import BayesianForecaster, HourForecast
@@ -107,7 +107,7 @@ class LocalForecastWeather(WeatherEntity):
 
         # Cached forecasts
         self._hourly: list[HourForecast] = []
-        self._last_update: float = 0
+        self._debounce_cancel: callback | None = None
         self._min_interval: float = 30.0  # seconds between full recalculations
 
     # ------------------------------------------------------------------
@@ -145,11 +145,17 @@ class LocalForecastWeather(WeatherEntity):
 
     @callback
     def _on_sensor_change(self, event: Event) -> None:
-        """Handle sensor state change — throttled."""
-        now = time.monotonic()
-        if now - self._last_update < self._min_interval:
-            return
-        self._last_update = now
+        """Handle sensor state change — debounced."""
+        if self._debounce_cancel:
+            self._debounce_cancel()
+        self._debounce_cancel = async_call_later(
+            self.hass, self._min_interval, self._debounce_fire
+        )
+
+    @callback
+    def _debounce_fire(self, _now) -> None:
+        """Fire after debounce interval — all sensors are current."""
+        self._debounce_cancel = None
         self.hass.async_create_task(self._async_recalculate())
 
     async def _async_recalculate(self) -> None:
@@ -179,7 +185,7 @@ class LocalForecastWeather(WeatherEntity):
         # QFE → QNH conversion if absolute pressure
         if self._cfg(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE) != PRESSURE_RELATIVE:
             elevation = self._cfg(CONF_ELEVATION, DEFAULT_ELEVATION)
-            if elevation and elevation > 0:
+            if elevation is not None and elevation != 0:
                 temp_kelvin = max(200.0, temperature + KELVIN_OFFSET)
                 pressure = pressure * (
                     1 - LAPSE_RATE * elevation / temp_kelvin
@@ -474,7 +480,7 @@ class LocalForecastWeather(WeatherEntity):
                     native_precipitation=hf.precipitation_amount,
                     native_wind_speed=hf.wind_speed,
                     wind_bearing=hf.wind_bearing,
-                    is_daytime=hf.condition != "clear-night",
+                    is_daytime=hf.is_daytime,
                 )
             )
         return result

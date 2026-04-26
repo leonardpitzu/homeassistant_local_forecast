@@ -51,14 +51,15 @@ class HourForecast:
     """One hour of forecast output."""
 
     hours_ahead: int
-    condition: str              # HA condition string (drives the icon)
-    temperature: float          # °C
-    humidity: float             # %
-    pressure: float             # hPa
+    condition: str                   # HA condition string (drives the icon)
+    temperature: float               # °C
+    humidity: float                  # %
+    pressure: float                  # hPa
     precipitation_probability: int   # 0-100
     precipitation_amount: float      # mm expected in this hour
-    wind_speed: float           # m/s
-    wind_bearing: float         # degrees
+    wind_speed: float                # m/s
+    wind_bearing: float              # degrees
+    is_daytime: bool = True          # day/night flag for icon variants
 
     # Full probability vector (for diagnostics / attributes)
     state_probs: list[float] | None = None
@@ -272,6 +273,7 @@ class BayesianForecaster:
                 precipitation_amount=round(precip_mm, 1),
                 wind_speed=round(smoothed.wind_speed, 1),
                 wind_bearing=round(smoothed.wind_direction),
+                is_daytime=not is_night,
                 state_probs=[round(p, 3) for p in prob],
             ))
 
