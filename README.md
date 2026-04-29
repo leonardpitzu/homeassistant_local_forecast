@@ -21,6 +21,7 @@ Seasons, time of day, and conditions all matter.
 | Clausius-Clapeyron humidity | Conservation of mixing ratio as temperature changes |
 | Kalman sensor smoothing | Per-channel 1-D filter, rejects spikes |
 | Day/night awareness | Swaps sunny/clear-night from `sun.sun` entity |
+| Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory — no icon flicker |
 | Unit auto-conversion | Accepts hPa/inHg/kPa, C/F, m-s/km-h/mph/knots |
 | Pixel display ready | Condition maps directly to ESPHome icon names |
 
@@ -30,7 +31,7 @@ Seasons, time of day, and conditions all matter.
 
 | Module | Purpose |
 |---|---|
-| `state_estimator.py` | Sensor fusion, Kalman smoothing, trend computation, frontal detection, weather classification |
+| `state_estimator.py` | Sensor fusion, Kalman smoothing, trend computation, frontal detection, weather classification, signal smoothing (rain persistence, cloud hysteresis, post-rain cloud memory) |
 | `bayesian_forecaster.py` | Markov transition matrix + Bayesian evidence updates, hourly probability vectors |
 | `physics_models.py` | Energy-balance temperature, Clausius-Clapeyron humidity, damped pressure extrapolation |
 | `weather.py` | HA WeatherEntity — reads sensors, runs pipeline, serves forecasts and attributes |
@@ -150,6 +151,14 @@ Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed $< 
 
 Wind shift is computed from the cross-product of consecutive direction
 vectors — positive = veering (clockwise), negative = backing.
+
+### Signal smoothing
+
+Three mechanisms prevent icon flicker on the dashboard:
+
+- **Rain persistence** — rain state is held for 20 minutes after rain rate drops below the light-rain threshold.  Prevents the icon from flashing between rainy and cloudy during intermittent showers.
+- **Cloud hysteresis** — a $\pm 0.06$ deadband on cloud-fraction thresholds.  If the current state is cloudy, the cloud fraction must drop below the threshold minus 0.06 to transition to partly-cloudy (and vice versa).  Eliminates rapid toggling at decision boundaries.
+- **Post-rain cloud memory** — after rain ends, a cloud-fraction floor of 0.40 is applied, linearly decaying to zero over 30 minutes.  Real skies stay overcast after rain stops; this prevents an immediate jump to sunny.
 
 ### Energy-balance temperature model
 
