@@ -107,6 +107,22 @@ class _KalmanChannel:
 #  State Estimator
 # ---------------------------------------------------------------------------
 
+# Rain persistence: seconds after last detected rain before clearing
+# the rain icon.  Showers come in bursts — without this the icon
+# flip-flops every minute.
+RAIN_PERSIST_SECONDS: float = 1200.0   # 20 minutes
+
+# Cloud classification hysteresis band (fraction).  To switch from
+# partly-cloudy → cloudy the fraction must exceed the threshold by
+# this amount; to switch back it must drop below by the same amount.
+CLOUD_HYSTERESIS: float = 0.06
+
+# After rain ends, how long (seconds) to keep a cloud-fraction floor.
+# Clouds don't vanish the instant the rain gauge dries.
+POST_RAIN_CLOUD_SECONDS: float = 1800.0   # 30 minutes
+POST_RAIN_CLOUD_FLOOR: float = 0.40
+
+
 class StateEstimator:
     """Fuses sensor readings into a clean state with trends and frontal flags."""
 
@@ -122,6 +138,8 @@ class StateEstimator:
         self._prev_dp_dt: Optional[float] = None
         self._prev_dd: Optional[float] = None
         self._wind_history: deque[tuple[float, float]] = deque(maxlen=60)
+        self._last_rain_ts: Optional[float] = None   # epoch of last rain_rate >= RAIN_LIGHT
+        self._prev_cloud_state: str = "clear"         # "clear" | "partly" | "cloudy"
 
     # ------------------------------------------------------------------
     #  Public API
@@ -148,6 +166,8 @@ class StateEstimator:
             self._state.solar_radiation = reading.solar_radiation_wm2
         if reading.rain_rate_mmh is not None:
             self._state.rain_rate = max(0.0, reading.rain_rate_mmh)
+            if self._state.rain_rate >= RAIN_LIGHT:
+                self._last_rain_ts = reading.timestamp
 
         # --- Derived quantities ---
         self._compute_trends()
@@ -184,11 +204,17 @@ class StateEstimator:
 
         # --- 1 & 2: Active precipitation (rain sensor) ---
         if s.rain_rate >= RAIN_LIGHT:
+            self._prev_cloud_state = "cloudy"   # rain implies overcast
             return self._precip_state(s)
 
-        # --- Also check: is precipitation *imminent*? ---
-        # Dew depression closing fast + pressure falling → precip about to start
-        # (but don't show rain icon yet — only when sensor confirms it)
+        # --- 1b: Rain persistence — keep rain icon for a while after ---
+        # Rain comes in bursts.  Without this the icon flips sunny/rainy
+        # every minute during a shower.
+        if self._last_rain_ts is not None and len(self._history) > 0:
+            age = self._history[-1].timestamp - self._last_rain_ts
+            if age < RAIN_PERSIST_SECONDS:
+                self._prev_cloud_state = "cloudy"   # still in rain episode
+                return self._precip_state(s)
 
         # --- 3: Thunderstorm proxy ---
         if (
@@ -210,12 +236,50 @@ class StateEstimator:
         if s.wind_speed >= WIND_STRONG:
             return S_WINDY
 
-        # --- 7 & 8: Cloud cover + day/night ---
+        # --- 7 & 8: Cloud cover + day/night (with hysteresis) ---
         cloud = self._estimate_cloud_fraction(sun_elevation_deg)
 
-        if cloud < 0.15:
+        # Apply post-rain cloud floor: clouds linger after showers
+        if self._last_rain_ts is not None and len(self._history) > 0:
+            rain_age = self._history[-1].timestamp - self._last_rain_ts
+            if rain_age < POST_RAIN_CLOUD_SECONDS:
+                # Linearly decay the floor from POST_RAIN_CLOUD_FLOOR → 0
+                decay = 1.0 - rain_age / POST_RAIN_CLOUD_SECONDS
+                cloud = max(cloud, POST_RAIN_CLOUD_FLOOR * decay)
+
+        # Hysteresis: require crossing threshold ± band to change state
+        h = CLOUD_HYSTERESIS
+        prev = self._prev_cloud_state
+
+        if prev == "cloudy":
+            # Stay cloudy unless cloud drops well below 0.50
+            if cloud < 0.50 - h:
+                if cloud < 0.15 - h:
+                    new = "clear"
+                else:
+                    new = "partly"
+            else:
+                new = "cloudy"
+        elif prev == "partly":
+            if cloud >= 0.50 + h:
+                new = "cloudy"
+            elif cloud < 0.15 - h:
+                new = "clear"
+            else:
+                new = "partly"
+        else:  # "clear"
+            if cloud >= 0.50 + h:
+                new = "cloudy"
+            elif cloud >= 0.15 + h:
+                new = "partly"
+            else:
+                new = "clear"
+
+        self._prev_cloud_state = new
+
+        if new == "clear":
             return S_CLEAR_NIGHT if s.is_night else S_CLEAR
-        if cloud < 0.50:
+        if new == "partly":
             return S_PARTLY_CLOUDY
         return S_CLOUDY
 

@@ -311,3 +311,183 @@ class TestFrontalDetection:
         # Steady conditions — no fronts
         assert not s.front_warm
         assert not s.front_cold
+
+
+# ===================================================================
+#  Rain persistence
+# ===================================================================
+
+class TestRainPersistence:
+    """Rain icon should persist after the rain gauge dries."""
+
+    def test_rain_persists_after_rate_drops(self):
+        """After rain stops, classify should still return a precip state
+        for up to RAIN_PERSIST_SECONDS."""
+        est = StateEstimator()
+        base = time.time()
+        # Warm up with rain
+        for i in range(5):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1010.0, temp=12.0,
+                humidity=85.0, wind=3.0, rain=3.0, solar=0.0,
+            ))
+        est.state.is_night = False
+        # Confirm rain state
+        idx = est.classify()
+        assert HA_CONDITIONS[idx] in ("rainy", "pouring", "lightning-rainy")
+
+        # Rain stops but only 5 minutes pass
+        for i in range(5):
+            est.update(_reading(
+                ts=base + 300 + i * 60, pressure=1010.0, temp=12.0,
+                humidity=85.0, wind=3.0, rain=0.0, solar=0.0,
+            ))
+        est.state.is_night = False
+        idx = est.classify()
+        # Should still show rain (persistence)
+        assert HA_CONDITIONS[idx] in ("rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy")
+
+    def test_rain_clears_after_persistence_window(self):
+        """After RAIN_PERSIST_SECONDS the rain icon should disappear."""
+        est = StateEstimator()
+        base = time.time()
+        # Rain for a few readings
+        for i in range(5):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1010.0, temp=12.0,
+                humidity=50.0, wind=2.0, rain=3.0, solar=0.0,
+            ))
+        # Jump 25 minutes (> 20 min persistence) with no rain
+        for i in range(5):
+            est.update(_reading(
+                ts=base + 1500 + i * 60, pressure=1015.0, temp=15.0,
+                humidity=40.0, wind=2.0, rain=0.0, solar=500.0,
+            ))
+        est.state.is_night = False
+        idx = est.classify()
+        # Should no longer be rain
+        assert HA_CONDITIONS[idx] not in ("rainy", "pouring")
+
+
+# ===================================================================
+#  Cloud hysteresis
+# ===================================================================
+
+class TestCloudHysteresis:
+    """Cloud classification should not flip-flop at thresholds."""
+
+    def test_no_flip_flop_near_cloudy_boundary(self):
+        """Hovering near cloud=0.50 should not toggle every reading."""
+        est = StateEstimator()
+        base = time.time()
+        # Start clearly cloudy (high humidity, no solar)
+        for i in range(10):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1015.0, temp=12.0,
+                humidity=75.0, wind=2.0, solar=0.0, rain=0.0,
+            ))
+        est.state.is_night = False
+        idx1 = est.classify()
+        cond1 = HA_CONDITIONS[idx1]
+
+        # Now nudge humidity slightly lower (still near boundary)
+        for i in range(3):
+            est.update(_reading(
+                ts=base + 600 + i * 60, pressure=1015.0, temp=12.0,
+                humidity=72.0, wind=2.0, solar=0.0, rain=0.0,
+            ))
+        est.state.is_night = False
+        idx2 = est.classify()
+        cond2 = HA_CONDITIONS[idx2]
+
+        # Should stay in same state, not flip
+        assert cond1 == cond2
+
+    def test_transitions_with_clear_signal(self):
+        """A strong signal should still cause a transition."""
+        est = StateEstimator()
+        base = time.time()
+        # Start cloudy
+        for i in range(10):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1015.0, temp=12.0,
+                humidity=75.0, wind=2.0, solar=0.0, rain=0.0,
+            ))
+        est.state.is_night = False
+        idx1 = est.classify()
+
+        # Switch to dry clear conditions
+        for i in range(10):
+            est.update(_reading(
+                ts=base + 600 + i * 60, pressure=1020.0, temp=22.0,
+                humidity=30.0, wind=2.0, solar=800.0, rain=0.0,
+            ))
+        est.state.is_night = False
+        idx2 = est.classify()
+        cond2 = HA_CONDITIONS[idx2]
+        # Should have transitioned to clear/sunny
+        assert cond2 in ("sunny", "partlycloudy")
+
+
+# ===================================================================
+#  Post-rain cloud memory
+# ===================================================================
+
+class TestPostRainCloudMemory:
+    """After rain, clouds should linger even if surface humidity drops."""
+
+    def test_cloud_floor_after_rain(self):
+        """Shortly after rain ends, classify should not return sunny."""
+        est = StateEstimator()
+        base = time.time()
+        # Rain period
+        for i in range(5):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1010.0, temp=10.0,
+                humidity=90.0, wind=3.0, rain=2.0, solar=0.0,
+            ))
+        est.state.is_night = False
+        # Call classify during rain so the internal cloud hysteresis
+        # state tracks that we were in a rainy (=cloudy) regime.
+        idx = est.classify()
+        assert HA_CONDITIONS[idx] in ("rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy")
+
+        # Rain stops, humidity drops fast (like real life)
+        for i in range(5):
+            est.update(_reading(
+                ts=base + 300 + i * 60, pressure=1015.0, temp=12.0,
+                humidity=55.0, wind=3.0, rain=0.0, solar=0.0,
+            ))
+        # Jump past rain persistence (21 min) but within cloud memory (30 min)
+        # Last rain was at base+4*60=base+240.
+        est.update(_reading(
+            ts=base + 240 + 1260, pressure=1015.0, temp=13.0,
+            humidity=50.0, wind=3.0, rain=0.0, solar=0.0,
+        ))
+        est.state.is_night = False
+        idx = est.classify()
+        cond = HA_CONDITIONS[idx]
+        # Should NOT be sunny — cloud floor + hysteresis keep it cloudy
+        assert cond in ("partlycloudy", "cloudy")
+
+    def test_cloud_floor_decays(self):
+        """After POST_RAIN_CLOUD_SECONDS, the floor is gone."""
+        est = StateEstimator()
+        base = time.time()
+        # Rain period
+        for i in range(5):
+            est.update(_reading(
+                ts=base + i * 60, pressure=1015.0, temp=15.0,
+                humidity=85.0, wind=2.0, rain=2.0, solar=0.0,
+            ))
+        # Jump to 35 min after rain ended (past 30 min window)
+        for i in range(5):
+            est.update(_reading(
+                ts=base + 2400 + i * 60, pressure=1020.0, temp=20.0,
+                humidity=35.0, wind=2.0, rain=0.0, solar=700.0,
+            ))
+        est.state.is_night = False
+        idx = est.classify()
+        cond = HA_CONDITIONS[idx]
+        # Cloud floor expired — should be able to clear
+        assert cond in ("sunny", "partlycloudy")
