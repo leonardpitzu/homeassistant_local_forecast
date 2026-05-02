@@ -8,7 +8,7 @@ pycares>=4.4.0  # Required for aiodns/aiohttp with Python 3.13
 aiodns>=3.2.0  # Python 3.13 compatible version
 
 # SQLAlchemy - required by Home Assistant recorder component
-sqlalchemy>=2.0.0  # Required for homeassistant.components.recorder
+sqlalchemy>=2.0.49  # Required for homeassistant.components.recorder
 
 # Code quality (optional)
 # pylint>=3.0.0
