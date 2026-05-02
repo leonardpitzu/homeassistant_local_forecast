@@ -1,6 +1,6 @@
 # Testing dependencies for Local Weather Forecast integration
 pytest>=9.0.0
-pytest-asyncio>=0.24.0
+pytest-asyncio>=1.3.0
 pytest-cov>=6.0.0
 
 # Fix for Python 3.13 compatibility
