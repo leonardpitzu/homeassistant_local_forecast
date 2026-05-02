@@ -1,7 +1,7 @@
 # Testing dependencies for Local Weather Forecast integration
 pytest>=9.0.0
 pytest-asyncio>=0.24.0
-pytest-cov>=6.0.0
+pytest-cov>=7.1.0
 
 # Fix for Python 3.13 compatibility
 pycares>=4.4.0  # Required for aiodns/aiohttp with Python 3.13
