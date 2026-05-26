@@ -55,7 +55,7 @@ from .const import (
     LAPSE_RATE,
     PRESSURE_RELATIVE,
 )
-from .physics_models import HumidityModel, PressureModel, TemperatureModel
+from .physics_models import HumidityModel, PressureModel, TemperatureModel, WindModel
 from .state_estimator import SensorReading, StateEstimator
 
 _LOGGER = logging.getLogger(__name__)
@@ -290,6 +290,7 @@ class LocalForecastWeather(WeatherEntity):
         )
         pres_model = PressureModel(s.pressure, s.dp_dt)
         hum_model = HumidityModel(s.humidity, s.temperature, temp_model)
+        wind_model = WindModel(s.wind_speed, s.wind_direction, s.dp_dt)
 
         # Bayesian forecast
         self._hourly = self._forecaster.forecast(
@@ -302,6 +303,7 @@ class LocalForecastWeather(WeatherEntity):
             predict_temperature=temp_model,
             predict_pressure=pres_model,
             predict_humidity=hum_model,
+            predict_wind=wind_model,
         )
 
         if self._hourly:
@@ -488,8 +490,8 @@ class LocalForecastWeather(WeatherEntity):
     async def async_forecast_daily(self) -> list[Forecast] | None:
         """Aggregate hourly into today / tomorrow / day-after-tomorrow.
 
-        With a 12-hour horizon, tomorrow and day+2 may share the same
-        tail hours.  This is the best we can do without a cloud API.
+        With a 12-hour horizon, tomorrow uses the tail hours and day+2
+        extrapolates further toward climatological mean values.
         """
         if not self._hourly:
             return None
@@ -505,16 +507,9 @@ class LocalForecastWeather(WeatherEntity):
         if not today_hours:
             today_hours = self._hourly[:min(6, len(self._hourly))]
 
-        # Day+2: reuse the last few hours as best-guess extrapolation
-        day2_hours = self._hourly[-min(4, len(self._hourly)):]
-
         days: list[Forecast] = []
 
-        for hours, offset_days in [
-            (today_hours, 0),
-            (tomorrow_hours, 1),
-            (day2_hours, 2),
-        ]:
+        for offset_days, hours in enumerate([today_hours, tomorrow_hours]):
             if not hours:
                 continue
             temps = [h.temperature for h in hours]
@@ -557,6 +552,75 @@ class LocalForecastWeather(WeatherEntity):
                         sum(h.wind_speed for h in hours) / len(hours), 1
                     ),
                     wind_bearing=round(hours[0].wind_bearing),
+                    is_daytime=True,
+                )
+            )
+
+        # Day+2: extrapolate beyond 12h horizon toward climatological norms.
+        # Decay precipitation probability, regress temps toward mean, etc.
+        if tomorrow_hours:
+            last = tomorrow_hours[-1]
+            # Temperature regresses toward the daily mean (avg of today's
+            # high/low) with ~24h time constant
+            today_temps = [h.temperature for h in today_hours] if today_hours else [last.temperature]
+            daily_mean = (max(today_temps) + min(today_temps)) / 2.0
+            day2_temp_high = round(
+                last.temperature * 0.6 + daily_mean * 0.4, 1
+            )
+            day2_temp_low = round(
+                min(h.temperature for h in tomorrow_hours) * 0.6
+                + (daily_mean - 4.0) * 0.4, 1
+            )
+            # Ensure high >= low
+            if day2_temp_high < day2_temp_low:
+                day2_temp_high, day2_temp_low = day2_temp_low, day2_temp_high
+
+            # Precip probability decays toward base rate (~20%)
+            last_precip = max(h.precipitation_probability for h in tomorrow_hours)
+            day2_precip_prob = round(last_precip * 0.7 + 20 * 0.3)
+
+            # Condition: if tomorrow had precip, day+2 is likely just cloudy
+            day2_condition = self._worst_condition(tomorrow_hours)
+            if day2_condition == "clear-night":
+                day2_condition = "sunny"
+            # Regress severe conditions toward milder
+            _CONDITION_DECAY = {
+                "pouring": "rainy",
+                "lightning-rainy": "rainy",
+                "exceptional": "cloudy",
+            }
+            day2_condition = _CONDITION_DECAY.get(day2_condition, day2_condition)
+
+            # Humidity regresses toward 55% (continental mean)
+            day2_humidity = round(
+                (sum(h.humidity for h in tomorrow_hours) / len(tomorrow_hours))
+                * 0.7 + 55 * 0.3
+            )
+
+            # Pressure continues gentle trend
+            day2_pressure = round(last.pressure + last.pressure - tomorrow_hours[0].pressure, 1)
+            day2_pressure = max(920.0, min(1070.0, day2_pressure))
+
+            day2_date = now.date() + timedelta(days=2)
+            dt_day2 = datetime(
+                day2_date.year, day2_date.month, day2_date.day, 12, 0, 0,
+                tzinfo=now.tzinfo,
+            )
+
+            days.append(
+                Forecast(  # type: ignore[typeddict-unknown-key]
+                    datetime=dt_day2.isoformat(),
+                    condition=day2_condition,
+                    native_temperature=day2_temp_high,
+                    native_templow=day2_temp_low,
+                    precipitation_probability=day2_precip_prob,
+                    native_precipitation=round(
+                        sum(h.precipitation_amount for h in tomorrow_hours) * 0.7, 1
+                    ),
+                    humidity=day2_humidity,
+                    native_pressure=day2_pressure,
+                    native_wind_speed=round(last.wind_speed * 0.8 + 0.5, 1),
+                    wind_bearing=round(last.wind_bearing),
                     is_daytime=True,
                 )
             )

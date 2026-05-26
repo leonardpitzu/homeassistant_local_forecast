@@ -13,6 +13,7 @@ from local_forecast.physics_models import (
     HumidityModel,
     PressureModel,
     TemperatureModel,
+    WindModel,
 )
 
 
@@ -245,3 +246,68 @@ class TestCrossModelConsistency:
         # Temperature doesn't depend on pressure model
         t6 = tm(6)
         assert isinstance(t6, float)
+
+
+# =====================================================================
+#  WindModel
+# =====================================================================
+
+class TestWindModel:
+    """Wind speed persistence + regression to mean, bearing evolution."""
+
+    def test_returns_tuple(self):
+        wm = WindModel(current_speed=3.0, current_bearing=180.0)
+        result = wm(1)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_speed_non_negative(self):
+        wm = WindModel(current_speed=0.0, current_bearing=90.0)
+        for h in range(1, 13):
+            speed, _ = wm(h)
+            assert speed >= 0.0
+
+    def test_bearing_in_range(self):
+        wm = WindModel(current_speed=5.0, current_bearing=350.0)
+        for h in range(1, 13):
+            _, bearing = wm(h)
+            assert 0 <= bearing < 360
+
+    def test_calm_wind_regresses_toward_mean(self):
+        """Starting from calm, speed should increase toward clim mean."""
+        wm = WindModel(current_speed=0.0, current_bearing=0.0)
+        speed_6, _ = wm(6)
+        speed_12, _ = wm(12)
+        assert speed_6 > 0.0
+        assert speed_12 > speed_6
+
+    def test_strong_wind_decays(self):
+        """Starting from strong wind, speed should decrease toward mean."""
+        wm = WindModel(current_speed=15.0, current_bearing=270.0)
+        speed_1, _ = wm(1)
+        speed_12, _ = wm(12)
+        assert speed_1 < 15.0
+        assert speed_12 < speed_1
+
+    def test_falling_pressure_increases_target(self):
+        """Falling pressure should make wind target higher."""
+        wm_falling = WindModel(current_speed=3.0, current_bearing=180.0, dp_dt=-3.0)
+        wm_rising = WindModel(current_speed=3.0, current_bearing=180.0, dp_dt=3.0)
+        speed_fall, _ = wm_falling(6)
+        speed_rise, _ = wm_rising(6)
+        assert speed_fall > speed_rise
+
+    def test_light_wind_bearing_persists(self):
+        """Light wind bearing stays constant (random noise suppressed)."""
+        wm = WindModel(current_speed=0.5, current_bearing=45.0)
+        for h in range(1, 13):
+            _, bearing = wm(h)
+            assert bearing == 45.0
+
+    def test_strong_wind_bearing_veers(self):
+        """Strong wind bearing veers clockwise over time."""
+        wm = WindModel(current_speed=8.0, current_bearing=180.0)
+        _, b1 = wm(1)
+        _, b6 = wm(6)
+        # Should veer clockwise (increase)
+        assert b6 > b1

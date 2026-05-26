@@ -192,6 +192,7 @@ class BayesianForecaster:
         predict_temperature: object | None = None,
         predict_pressure: object | None = None,
         predict_humidity: object | None = None,
+        predict_wind: object | None = None,
     ) -> list[HourForecast]:
         """Produce hourly forecasts from 1..hours.
 
@@ -250,6 +251,13 @@ class BayesianForecaster:
             # --- Step 5: Normalise ---
             prob = self._normalise(prob)
 
+            # --- Wind prediction ---
+            if predict_wind is not None:
+                wind_speed_h, wind_bearing_h = predict_wind(h)
+            else:
+                wind_speed_h = smoothed.wind_speed
+                wind_bearing_h = smoothed.wind_direction
+
             # --- Output ---
             best = max(range(NUM_STATES), key=lambda i: prob[i])
             condition = HA_CONDITIONS[best]
@@ -263,6 +271,14 @@ class BayesianForecaster:
             # Expected precipitation (rough: map probability to mm/h)
             precip_mm = self._estimate_precip_amount(prob, smoothed.rain_rate)
 
+            # Zero out precipitation amount when condition is not a precip
+            # state — avoids confusing "cloudy, 1mm" on weather cards
+            _PRECIP_CONDITIONS = (
+                "rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy",
+            )
+            if condition not in _PRECIP_CONDITIONS:
+                precip_mm = 0.0
+
             results.append(HourForecast(
                 hours_ahead=h,
                 condition=condition,
@@ -271,8 +287,8 @@ class BayesianForecaster:
                 pressure=round(pres_h, 1),
                 precipitation_probability=round(min(100, precip_prob * 100)),
                 precipitation_amount=round(precip_mm, 1),
-                wind_speed=round(smoothed.wind_speed, 1),
-                wind_bearing=round(smoothed.wind_direction),
+                wind_speed=round(wind_speed_h, 1),
+                wind_bearing=round(wind_bearing_h),
                 is_daytime=not is_night,
                 state_probs=[round(p, 3) for p in prob],
             ))

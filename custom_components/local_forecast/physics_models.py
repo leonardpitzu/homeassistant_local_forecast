@@ -194,6 +194,57 @@ class TemperatureModel:
 #  handles that probabilistically.
 # ---------------------------------------------------------------------------
 
+class WindModel:
+    """Predict wind speed and bearing with persistence + regression to mean.
+
+    Light winds (< 2 m/s) are dominated by thermal convection noise —
+    direction is effectively random, and speed decays toward calm.
+    Stronger winds persist direction but speed regresses toward a
+    climatological mean.
+
+    Returns a (speed_ms, bearing_deg) tuple for a given hours_ahead.
+    """
+
+    # Climatological mean wind speed (light inland continental)
+    CLIM_MEAN_SPEED: float = 2.5  # m/s
+
+    # Below this threshold, wind direction is unreliable
+    LIGHT_WIND_THRESHOLD: float = 2.0  # m/s
+
+    def __init__(
+        self,
+        current_speed: float,
+        current_bearing: float,
+        dp_dt: float = 0.0,
+    ) -> None:
+        self.speed0 = current_speed
+        self.bearing0 = current_bearing
+        self.dp_dt = dp_dt
+
+    def __call__(self, hours_ahead: int) -> tuple[float, float]:
+        speed = self._predict_speed(hours_ahead)
+        bearing = self._predict_bearing(hours_ahead, speed)
+        return (round(max(0.0, speed), 1), round(bearing % 360, 0))
+
+    def _predict_speed(self, h: int) -> float:
+        """Speed regresses toward climatological mean with ~6h half-life."""
+        # Pressure tendency modifies the target: falling pressure → more wind
+        target = self.CLIM_MEAN_SPEED + max(-3.0, min(3.0, -self.dp_dt * 0.5))
+        # Exponential regression: τ = 6h
+        decay = math.exp(-h / 6.0)
+        return self.speed0 * decay + target * (1 - decay)
+
+    def _predict_bearing(self, h: int, predicted_speed: float) -> float:
+        """Bearing persistence depends on wind speed."""
+        if self.speed0 < self.LIGHT_WIND_THRESHOLD:
+            # Current wind is too light for reliable direction — persist
+            return self.bearing0
+        # Stronger winds: persist with slight veering (Ekman effect, NH)
+        # ~5°/h clockwise rotation at moderate speeds
+        veer_rate = 3.0 * min(1.0, predicted_speed / 8.0)
+        return self.bearing0 + veer_rate * h
+
+
 class HumidityModel:
     """Predict RH from temperature change via Clausius-Clapeyron."""
 
