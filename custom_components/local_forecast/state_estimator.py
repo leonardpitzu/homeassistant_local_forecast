@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from .const import (
@@ -362,7 +362,6 @@ class StateEstimator:
         else:
             Td = (b * alpha) / (a - alpha)
 
-        old_dd = self._state.dew_depression
         self._state.dew_point = round(Td, 1)
         self._state.dew_depression = round(T - Td, 1)
 

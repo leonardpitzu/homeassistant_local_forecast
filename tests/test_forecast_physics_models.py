@@ -2,7 +2,6 @@
 
 import sys
 import os
-import math
 
 sys.path.insert(
     0,
@@ -156,30 +155,30 @@ class TestHumidityModel:
 
     def test_cooling_increases_rh(self):
         """When temperature drops, RH rises (Clausius-Clapeyron)."""
-        temp_fn = lambda h: 20.0 - h * 1.0  # cooling 1°C/h
+        def temp_fn(h): return 20.0 - h * 1.0  # cooling 1°C/h
         hm = HumidityModel(current_rh=60.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(3) > 60.0
 
     def test_warming_decreases_rh(self):
         """When temperature rises, RH drops."""
-        temp_fn = lambda h: 20.0 + h * 1.0
+        def temp_fn(h): return 20.0 + h * 1.0
         hm = HumidityModel(current_rh=70.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(3) < 70.0
 
     def test_no_temp_change_no_rh_change(self):
-        temp_fn = lambda h: 20.0
+        def temp_fn(h): return 20.0
         hm = HumidityModel(current_rh=55.0, current_temp=20.0, temperature_model=temp_fn)
         assert abs(hm(5) - 55.0) < 0.5
 
     def test_clamped_upper(self):
         """RH should not exceed 100%."""
-        temp_fn = lambda h: 20.0 - h * 5.0  # rapid cooling
+        def temp_fn(h): return 20.0 - h * 5.0  # rapid cooling
         hm = HumidityModel(current_rh=80.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(6) <= 100.0
 
     def test_clamped_lower(self):
         """RH should not drop below 1%."""
-        temp_fn = lambda h: 20.0 + h * 10.0  # extreme warming
+        def temp_fn(h): return 20.0 + h * 10.0  # extreme warming
         hm = HumidityModel(current_rh=10.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(6) >= 1.0
 

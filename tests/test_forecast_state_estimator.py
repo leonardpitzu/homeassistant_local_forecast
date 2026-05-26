@@ -12,17 +12,6 @@ sys.path.insert(
 from local_forecast.state_estimator import SensorReading, SmoothedState, StateEstimator
 from local_forecast.const import (
     HA_CONDITIONS,
-    S_CLEAR,
-    S_CLEAR_NIGHT,
-    S_CLOUDY,
-    S_FOG,
-    S_LIGHTNING_RAINY,
-    S_PARTLY_CLOUDY,
-    S_POURING,
-    S_RAINY,
-    S_SNOWY,
-    S_SNOWY_RAINY,
-    S_WINDY,
 )
 
 
@@ -414,7 +403,7 @@ class TestCloudHysteresis:
                 humidity=75.0, wind=2.0, solar=0.0, rain=0.0,
             ))
         est.state.is_night = False
-        idx1 = est.classify()
+        est.classify()
 
         # Switch to dry clear conditions
         for i in range(10):

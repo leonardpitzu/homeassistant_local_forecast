@@ -7,7 +7,6 @@ have their own history, can be graphed in tile cards, and used in badges.
 from __future__ import annotations
 
 from homeassistant.components.sensor import (
-    SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )

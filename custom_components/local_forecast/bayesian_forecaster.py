@@ -15,15 +15,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 from .const import (
-    FOG_DEW_DEPRESSION,
     FORECAST_HOURS,
     HA_CONDITIONS,
     NUM_STATES,
-    RAIN_HEAVY,
-    RAIN_LIGHT,
     S_CLEAR,
     S_CLEAR_NIGHT,
     S_CLOUDY,
@@ -36,8 +32,6 @@ from .const import (
     S_SNOWY,
     S_SNOWY_RAINY,
     S_WINDY,
-    WET_BULB_MIX_UPPER,
-    WET_BULB_SNOW,
 )
 from .state_estimator import SmoothedState
 
@@ -404,7 +398,7 @@ class BayesianForecaster:
             likelihood[S_FOG] *= max(0.2, 1.0 - 0.6 * w)
 
         # Multiply prior × likelihood
-        return [p * l for p, l in zip(prob, likelihood)]
+        return [p * lk for p, lk in zip(prob, likelihood)]
 
     def _apply_constraints(
         self, prob: list[float], temp: float, is_night: bool

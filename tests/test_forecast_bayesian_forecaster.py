@@ -8,7 +8,7 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "custom_components"),
 )
 
-from local_forecast.bayesian_forecaster import BayesianForecaster, HourForecast
+from local_forecast.bayesian_forecaster import BayesianForecaster
 from local_forecast.state_estimator import SmoothedState
 from local_forecast.const import (
     FORECAST_HOURS,
@@ -17,11 +17,8 @@ from local_forecast.const import (
     S_CLEAR,
     S_CLEAR_NIGHT,
     S_CLOUDY,
-    S_FOG,
-    S_POURING,
     S_RAINY,
     S_SNOWY,
-    S_SNOWY_RAINY,
 )
 
 
