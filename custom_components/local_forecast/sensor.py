@@ -51,8 +51,19 @@ _CONDITION_ICONS: dict[str, str] = {
 }
 
 
-def _precip_icon(wet_bulb: float | None) -> str:
-    """Pick rain/snow/sleet icon based on wet-bulb temperature."""
+# Below this probability (%) the precip badge shows a neutral icon
+# instead of an alarming rain cloud under fair skies.
+_DRY_PROBABILITY_THRESHOLD = 20
+
+
+def _precip_icon(wet_bulb: float | None, probability: float | None = None) -> str:
+    """Pick the precipitation icon.
+
+    With a negligible probability, return a neutral 'dry' icon; otherwise
+    choose rain / sleet / snow from the wet-bulb temperature.
+    """
+    if probability is not None and probability < _DRY_PROBABILITY_THRESHOLD:
+        return "mdi:weather-partly-cloudy"
     if wet_bulb is None:
         return "mdi:weather-rainy"
     if wet_bulb < -2.0:
@@ -137,7 +148,9 @@ class PrecipProbability6hSensor(_ForecastSensorBase):
     @property
     def icon(self) -> str:
         attrs = self._weather.extra_state_attributes
-        return _precip_icon(attrs.get("wet_bulb"))
+        return _precip_icon(
+            attrs.get("wet_bulb"), attrs.get("precip_probability_6h")
+        )
 
 
 class NextHourConditionSensor(_ForecastSensorBase):
@@ -183,4 +196,6 @@ class NextHourPrecipProbabilitySensor(_ForecastSensorBase):
     @property
     def icon(self) -> str:
         attrs = self._weather.extra_state_attributes
-        return _precip_icon(attrs.get("wet_bulb"))
+        return _precip_icon(
+            attrs.get("wet_bulb"), attrs.get("next_hour_precip_probability")
+        )

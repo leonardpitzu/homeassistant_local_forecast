@@ -261,7 +261,7 @@ Physical impossibilities are zeroed out:
 | `front_occluded` | bool | Occluded front detected |
 | `next_hour_condition` | str | HA condition for hour +1 |
 | `next_hour_precip_probability` | int | 0-100 for hour +1 |
-| `precip_probability_6h` | int | P(any rain in next 6h) |
+| `precip_probability_6h` | int | Max hourly rain probability over next 6h |
 
 Standard weather entity properties are also available:
 `temperature`, `apparent_temperature`, `dew_point`, `humidity`,

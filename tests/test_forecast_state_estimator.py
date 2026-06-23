@@ -480,3 +480,69 @@ class TestPostRainCloudMemory:
         cond = HA_CONDITIONS[idx]
         # Cloud floor expired — should be able to clear
         assert cond in ("sunny", "partlycloudy")
+
+
+# ===================================================================
+#  Pressure acceleration (central second difference)
+# ===================================================================
+
+class TestPressureAcceleration:
+    """d2p/dt2 is computed as a central second difference over 3h."""
+
+    def test_central_difference_on_known_curve(self):
+        """Feed P(t) = 1013 - 0.5*t_h^2 (t_h in hours).
+
+        Analytically dP/dt = -t_h and d2P/dt2 = -1 hPa/h^2. The estimator
+        samples P(now), P(now-1.5h) and P(now-3h) at the exact knot points,
+        so the central second difference must recover -1.0.
+        """
+        est = StateEstimator()
+        base = time.time()
+        # 19 readings, every 10 min => spans exactly 0..180 min (3h).
+        for i in range(19):
+            t_h = (i * 600) / 3600.0
+            p = 1013.0 - 0.5 * t_h * t_h
+            est.update(_reading(ts=base + i * 600, pressure=p, temp=15.0))
+        # Accelerating fall -> negative curvature, ~ -1.0 hPa/h^2.
+        assert -1.2 < est.state.d2p_dt2 < -0.8
+
+    def test_zero_acceleration_on_linear_trend(self):
+        """A constant pressure rate gives zero second derivative."""
+        est = StateEstimator()
+        base = time.time()
+        # Linear fall: P(t) = 1013 - 2*t_h  -> dP/dt const, d2P/dt2 = 0.
+        for i in range(19):
+            t_h = (i * 600) / 3600.0
+            p = 1013.0 - 2.0 * t_h
+            est.update(_reading(ts=base + i * 600, pressure=p, temp=15.0))
+        assert abs(est.state.d2p_dt2) < 0.1
+
+
+# ===================================================================
+#  Wind-direction circular smoothing
+# ===================================================================
+
+class TestWindDirectionSmoothing:
+    """Wind bearing is smoothed on the unit circle, not as a scalar."""
+
+    def test_no_south_artifact_across_north(self):
+        """Alternating 350 deg / 10 deg straddles north.
+
+        A naive scalar average would land near 180 deg (due south). The
+        circular EMA must keep the smoothed bearing near north (0/360).
+        """
+        est = StateEstimator()
+        base = time.time()
+        for i in range(20):
+            wd = 350.0 if i % 2 == 0 else 10.0
+            est.update(_reading(ts=base + i * 60, wind_dir=wd))
+        wd_out = est.state.wind_direction
+        assert wd_out > 340.0 or wd_out < 20.0
+
+    def test_converges_to_steady_bearing(self):
+        """A constant bearing should be preserved by the smoother."""
+        est = StateEstimator()
+        base = time.time()
+        for i in range(20):
+            est.update(_reading(ts=base + i * 60, wind_dir=135.0))
+        assert abs(est.state.wind_direction - 135.0) < 1.0

@@ -122,6 +122,11 @@ CLOUD_HYSTERESIS: float = 0.06
 POST_RAIN_CLOUD_SECONDS: float = 1800.0   # 30 minutes
 POST_RAIN_CLOUD_FLOOR: float = 0.40
 
+# Wind-direction smoothing factor (exponential, applied to unit vectors).
+# 0.3 ≈ a ~3-sample time constant: damps light-wind jitter without
+# lagging genuine wind shifts.
+WIND_DIR_SMOOTH_ALPHA: float = 0.3
+
 
 class StateEstimator:
     """Fuses sensor readings into a clean state with trends and frontal flags."""
@@ -135,9 +140,11 @@ class StateEstimator:
             "wind_speed":  _KalmanChannel(q=0.1,   r=0.5),
         }
         self._state = SmoothedState()
-        self._prev_dp_dt: Optional[float] = None
         self._prev_dd: Optional[float] = None
         self._wind_history: deque[tuple[float, float]] = deque(maxlen=60)
+        # Circular (vector) smoothing of wind bearing
+        self._wind_dir_sin: Optional[float] = None
+        self._wind_dir_cos: Optional[float] = None
         self._last_rain_ts: Optional[float] = None   # epoch of last rain_rate >= RAIN_LIGHT
         self._prev_cloud_state: str = "clear"         # "clear" | "partly" | "cloudy"
 
@@ -158,7 +165,9 @@ class StateEstimator:
         if reading.wind_speed_ms is not None:
             self._state.wind_speed = self._kalman("wind_speed", reading.wind_speed_ms)
         if reading.wind_direction_deg is not None:
-            self._state.wind_direction = reading.wind_direction_deg
+            self._state.wind_direction = self._smooth_wind_direction(
+                reading.wind_direction_deg
+            )
             self._wind_history.append(
                 (reading.timestamp, reading.wind_direction_deg)
             )
@@ -321,6 +330,24 @@ class StateEstimator:
         k.p *= 1.0 - gain
         return k.x
 
+    def _smooth_wind_direction(self, bearing_deg: float) -> float:
+        """Circular exponential smoothing of the wind bearing.
+
+        Averaging raw degrees is wrong across the 0/360 wrap, so smooth
+        the unit-vector (sin, cos) components and recover the angle.
+        """
+        rad = math.radians(bearing_deg)
+        s_comp, c_comp = math.sin(rad), math.cos(rad)
+        if self._wind_dir_sin is None or self._wind_dir_cos is None:
+            self._wind_dir_sin, self._wind_dir_cos = s_comp, c_comp
+        else:
+            a = WIND_DIR_SMOOTH_ALPHA
+            self._wind_dir_sin += a * (s_comp - self._wind_dir_sin)
+            self._wind_dir_cos += a * (c_comp - self._wind_dir_cos)
+        return math.degrees(
+            math.atan2(self._wind_dir_sin, self._wind_dir_cos)
+        ) % 360.0
+
     def _compute_trends(self) -> None:
         """Compute dp/dt, d²p/dt², dT/dt, dH/dt from history ring buffer."""
         if len(self._history) < 2:
@@ -343,11 +370,19 @@ class StateEstimator:
             if ref.humidity_pct is not None and now.humidity_pct is not None:
                 self._state.dh_dt = (now.humidity_pct - ref.humidity_pct) / dt_h
 
-        # Pressure acceleration from 3-h window
-        ref3 = self._find_nearest(t_now - 10800)
-        if ref3 is not None and self._prev_dp_dt is not None:
-            self._state.d2p_dt2 = self._state.dp_dt - self._prev_dp_dt
-        self._prev_dp_dt = self._state.dp_dt
+        # Pressure acceleration: central second difference over a 3-h span.
+        #   d²P/dt² ≈ (P(t) − 2·P(t−Δ) + P(t−2Δ)) / Δ²   with Δ ≈ 1.5 h
+        # Properly expressed in hPa/h² (the previous version differenced two
+        # consecutive readings seconds apart, which was effectively zero).
+        ref_mid = self._find_nearest(t_now - 5400)    # ~1.5 h ago
+        ref_old = self._find_nearest(t_now - 10800)   # ~3 h ago
+        if ref_mid is not None and ref_old is not None:
+            delta_h = 1.5
+            self._state.d2p_dt2 = (
+                now.pressure_hpa
+                - 2.0 * ref_mid.pressure_hpa
+                + ref_old.pressure_hpa
+            ) / (delta_h ** 2)
 
     def _compute_moisture(self) -> None:
         """Dew point (Magnus), wet-bulb (Stull 2011), depression trend."""

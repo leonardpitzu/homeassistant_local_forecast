@@ -125,13 +125,29 @@ class LocalForecastOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        if user_input is not None:
-            cleaned = {
-                k: v for k, v in user_input.items() if v not in (None, "")
-            }
-            return self.async_create_entry(title="", data=cleaned)
+        errors: dict[str, str] = {}
 
+        if user_input is not None:
+            # Validate required sensors exist (mirror the user step)
+            for key in (CONF_PRESSURE_SENSOR, CONF_TEMPERATURE_SENSOR):
+                sid = user_input.get(key)
+                if sid and not self.hass.states.get(sid):
+                    errors[key] = "sensor_not_found"
+
+            if not -500 <= user_input.get(CONF_ELEVATION, 0) <= 9000:
+                errors[CONF_ELEVATION] = "invalid_elevation"
+
+            if not errors:
+                cleaned = {
+                    k: v for k, v in user_input.items() if v not in (None, "")
+                }
+                return self.async_create_entry(title="", data=cleaned)
+
+        # Pre-fill with submitted values (on validation error) falling back
+        # to the stored configuration.
         data = {**self._entry.data, **self._entry.options}
+        if user_input is not None:
+            data = {**data, **user_input}
         schema = vol.Schema(
             {
                 vol.Required(
@@ -185,4 +201,6 @@ class LocalForecastOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(
+            step_id="init", data_schema=schema, errors=errors
+        )

@@ -32,6 +32,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .bayesian_forecaster import BayesianForecaster, HourForecast
@@ -67,7 +68,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Local Weather Forecast weather entity."""
-    entity = LocalForecastWeather(hass, entry)
+    integration = await async_get_integration(hass, DOMAIN)
+    sw_version = str(integration.version) if integration.version else None
+    entity = LocalForecastWeather(hass, entry, sw_version=sw_version)
     hass.data[DOMAIN][entry.entry_id]["weather_entity"] = entity
     async_add_entities([entity], True)
 
@@ -89,7 +92,9 @@ class LocalForecastWeather(WeatherEntity):
         | WeatherEntityFeature.FORECAST_DAILY
     )
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, sw_version: str | None = None
+    ) -> None:
         self.hass = hass
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_weather"
@@ -98,7 +103,7 @@ class LocalForecastWeather(WeatherEntity):
             name="Local Weather Forecast",
             manufacturer="Local Weather Forecast",
             model="Bayesian Forecaster",
-            sw_version="1.0.0",
+            sw_version=sw_version,
         )
 
         # Core pipeline
@@ -107,6 +112,7 @@ class LocalForecastWeather(WeatherEntity):
 
         # Cached forecasts
         self._hourly: list[HourForecast] = []
+        self._condition: str | None = None
         self._debounce_cancel: callback | None = None
         self._min_interval: float = 30.0  # seconds between full recalculations
 
@@ -263,8 +269,11 @@ class LocalForecastWeather(WeatherEntity):
         now_h = dt_util.now().hour + dt_util.now().minute / 60.0
         s.is_night = not (sunrise_h <= now_h < sunset_h)
 
-        # Current state classification
+        # Current state classification.  Cache it for the `condition`
+        # property so that reading entity state never mutates the
+        # estimator's cloud-hysteresis / rain-persistence state machine.
         current_idx = self._estimator.classify(sun_el)
+        self._condition = HA_CONDITIONS[current_idx]
 
         _LOGGER.debug(
             "Pipeline: P=%.1f dp/dt=%.2f T=%.1f RH=%.0f wind=%.1f "
@@ -355,8 +364,7 @@ class LocalForecastWeather(WeatherEntity):
 
     @property
     def condition(self) -> str | None:
-        sun_el = self._sun_elevation()
-        return HA_CONDITIONS[self._estimator.classify(sun_el)]
+        return self._condition
 
     @property
     def native_temperature(self) -> float | None:
@@ -450,13 +458,15 @@ class LocalForecastWeather(WeatherEntity):
             h1 = self._hourly[0]
             attrs["next_hour_condition"] = h1.condition
             attrs["next_hour_precip_probability"] = h1.precipitation_probability
-            # Aggregate precipitation probability over next 6 h
+            # Aggregate precipitation probability over the next 6 h.
+            # Hourly probabilities are strongly correlated (not independent),
+            # so compounding 1−Π(1−pᵢ) badly overstates the risk — a sunny
+            # day reads ~35%.  The window maximum is the honest "chance of
+            # rain in the next 6 hours" for a non-technical dashboard.
             if len(self._hourly) >= 6:
-                # Probability of at least one rainy hour in next 6
-                p_no_rain = 1.0
-                for hf in self._hourly[:6]:
-                    p_no_rain *= 1.0 - hf.precipitation_probability / 100.0
-                attrs["precip_probability_6h"] = round((1 - p_no_rain) * 100)
+                attrs["precip_probability_6h"] = max(
+                    hf.precipitation_probability for hf in self._hourly[:6]
+                )
         return attrs
 
     # ------------------------------------------------------------------
