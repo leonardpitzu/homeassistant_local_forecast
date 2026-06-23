@@ -96,3 +96,6 @@ desktop.ini
 # Git
 *.orig
 
+
+# Agent memory (local only — never publish)
+AGENTS.md
