@@ -14,6 +14,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ELEVATION,
+    CONF_ENABLE_MAP,
     CONF_HUMIDITY_SENSOR,
     CONF_PRESSURE_SENSOR,
     CONF_PRESSURE_TYPE,
@@ -23,6 +24,7 @@ from .const import (
     CONF_WIND_DIRECTION_SENSOR,
     CONF_WIND_SPEED_SENSOR,
     DEFAULT_ELEVATION,
+    DEFAULT_ENABLE_MAP,
     DEFAULT_PRESSURE_TYPE,
     DOMAIN,
     PRESSURE_ABSOLUTE,
@@ -101,6 +103,9 @@ class LocalForecastConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                vol.Optional(
+                    CONF_ENABLE_MAP, default=DEFAULT_ENABLE_MAP
+                ): selector.BooleanSelector(),
             }
         )
 
@@ -198,6 +203,10 @@ class LocalForecastOptionsFlow(config_entries.OptionsFlow):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                vol.Optional(
+                    CONF_ENABLE_MAP,
+                    default=data.get(CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP),
+                ): selector.BooleanSelector(),
             }
         )
 

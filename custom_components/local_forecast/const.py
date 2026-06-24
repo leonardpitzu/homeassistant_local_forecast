@@ -19,6 +19,9 @@ CONF_RAIN_RATE_SENSOR: Final = "rain_rate_sensor"
 CONF_ELEVATION: Final = "elevation"
 CONF_PRESSURE_TYPE: Final = "pressure_type"
 
+# --- Config keys: optional satellite map ---
+CONF_ENABLE_MAP: Final = "enable_map"
+
 # --- Pressure types ---
 PRESSURE_ABSOLUTE: Final = "absolute"
 PRESSURE_RELATIVE: Final = "relative"
@@ -26,6 +29,7 @@ PRESSURE_RELATIVE: Final = "relative"
 # --- Defaults ---
 DEFAULT_ELEVATION: Final = 0
 DEFAULT_PRESSURE_TYPE: Final = PRESSURE_ABSOLUTE
+DEFAULT_ENABLE_MAP: Final = False
 
 # --- Physical constants ---
 LAPSE_RATE: Final = 0.0065          # K/m  (ISA tropospheric lapse rate)
@@ -119,3 +123,35 @@ HISTORY_MAX_RECORDS: Final = 360
 
 # --- Forecast horizon ---
 FORECAST_HOURS: Final = 12
+
+# ---------------------------------------------------------------------------
+#  Optional satellite map view (Leaflet over EUMETView WMS)
+#
+#  When enabled, the integration serves an interactive pan/zoom satellite
+#  viewer at /api/local_forecast/map, centred live on the Home Assistant home
+#  location. The browser tiles EUMETView's public, anonymous WMS GetMap
+#  endpoint directly — no polling, no entities, no token. Embed with an
+#  `iframe` card. Disabled by default; toggle it in the integration options.
+# ---------------------------------------------------------------------------
+WMS_BASE_URL: Final = "https://view.eumetsat.int/geoserver/ows"
+WMS_VERSION: Final = "1.3.0"  # WMS 1.3.0 + EPSG:4326 → lat,lon axis order.
+MAP_VIEW_URL: Final = "/api/local_forecast/map"
+MAP_DEFAULT_ZOOM: Final = 6
+MAP_MAX_ZOOM: Final = 9
+
+# Fallback centre when Home Assistant has no home location configured
+# (central Europe). Normally hass.config.latitude/longitude is used live.
+MAP_FALLBACK_CENTER: Final = (45.0, 25.0)
+
+# Curated EUMETView RGB layers (layer id, friendly name), taken from the live
+# WMS GetCapabilities document. Shown in the viewer's layer switcher.
+MAP_LAYERS: Final[list[tuple[str, str]]] = [
+    ("mtg_fd:rgb_geocolour", "Geo Colour"),
+    ("msg_fes:rgb_natural", "Natural Colour"),
+    ("msg_fes:rgb_naturalenhncd", "Natural Colour Enhanced"),
+    ("msg_fes:rgb_dust", "Dust"),
+    ("msg_fes:rgb_airmass", "Airmass"),
+    ("msg_fes:rgb_convection", "Convection"),
+    ("msg_fes:rgb_ash", "Volcanic Ash"),
+    ("msg_fes:rgb_fog", "Fog / Low Clouds"),
+]

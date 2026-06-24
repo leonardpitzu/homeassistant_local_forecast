@@ -13,7 +13,8 @@
           "solar_radiation_sensor": "Solar radiation sensor (optional)",
           "rain_rate_sensor": "Rain rate sensor (optional)",
           "elevation": "Station elevation (m)",
-          "pressure_type": "Pressure type"
+          "pressure_type": "Pressure type",
+          "enable_map": "Enable satellite map (pan/zoom view)"
         }
       }
     },
@@ -36,7 +37,8 @@
           "solar_radiation_sensor": "Solar radiation sensor (optional)",
           "rain_rate_sensor": "Rain rate sensor (optional)",
           "elevation": "Station elevation (m)",
-          "pressure_type": "Pressure type"
+          "pressure_type": "Pressure type",
+          "enable_map": "Enable satellite map (pan/zoom view)"
         }
       }
     },

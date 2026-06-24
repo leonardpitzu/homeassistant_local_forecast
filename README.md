@@ -24,6 +24,7 @@ Seasons, time of day, and conditions all matter.
 | Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory — no icon flicker |
 | Unit auto-conversion | Accepts hPa/inHg/kPa, C/F, m-s/km-h/mph/knots |
 | Pixel display ready | Condition maps directly to ESPHome icon names |
+| Satellite map (optional) | Interactive pan/zoom EUMETSAT view, centred on your home — off by default |
 
 ---
 
@@ -296,6 +297,38 @@ in tile cards.
 
 ---
 
+## Satellite map (optional)
+
+<details>
+<summary>Interactive pan/zoom satellite view, centred live on your home location</summary>
+
+An optional, self-contained pan/zoom satellite viewer for glancing at what is
+actually heading your way — handy when a weather alert fires and you want to
+see the incoming system. It is **off by default**; enable it under
+**Settings → Devices & Services → Local Weather Forecast → Configure** by
+ticking **Enable satellite map**. When disabled, the endpoint is not served at
+all.
+
+When enabled, the integration serves a Leaflet viewer at
+`/api/local_forecast/map`. Your browser tiles EUMETSAT's public
+[EUMETView](https://view.eumetsat.int/) WMS endpoint directly — there are **no
+extra entities, no polling, and no API key**. The view opens centred on your
+Home Assistant home location (read live, so moving home in HA settings
+recentres the map) and offers a layer switcher for Geo Colour, Natural Colour,
+Dust, Airmass, Convection, Volcanic Ash, and Fog / Low Clouds.
+
+Add it to a dashboard with an `iframe` card:
+
+```yaml
+type: iframe
+url: /api/local_forecast/map
+aspect_ratio: 75%
+```
+
+</details>
+
+---
+
 ## Installation and configuration
 
 <details>
@@ -328,6 +361,7 @@ Settings, Devices and Services, Add Integration, Local Weather Forecast.
 | Rain rate sensor | | mm/h — enables live precipitation detection |
 | Elevation | | Station elevation in metres (for QFE to QNH conversion) |
 | Pressure type | | Absolute (QFE) or Sea-level (QNH) |
+| Enable satellite map | | Serves an interactive pan/zoom satellite view at `/api/local_forecast/map` (off by default) |
 
 Minimum viable setup: pressure + temperature.  Everything else improves accuracy.
 
