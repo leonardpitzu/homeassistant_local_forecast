@@ -31,7 +31,6 @@ DEFAULT_PRESSURE_TYPE: Final = PRESSURE_ABSOLUTE
 LAPSE_RATE: Final = 0.0065          # K/m  (ISA tropospheric lapse rate)
 GRAVITY_EXPONENT: Final = 5.257     # g/(L·R) for barometric formula
 KELVIN_OFFSET: Final = 273.15
-STEFAN_BOLTZMANN: Final = 5.67e-8   # W/(m²·K⁴)
 
 # ---------------------------------------------------------------------------
 #  Internal weather states
@@ -101,7 +100,6 @@ WET_BULB_MIX_UPPER: Final = 1.0
 
 # --- Rain intensity (mm/h) ---
 RAIN_LIGHT: Final = 0.5
-RAIN_MODERATE: Final = 2.5
 RAIN_HEAVY: Final = 7.5
 
 # --- Fog ---
@@ -117,7 +115,6 @@ STORM_HUMIDITY: Final = 80.0       # %
 STORM_WIND: Final = 8.0            # m/s
 
 # --- History ring-buffer ---
-HISTORY_HOURS: Final = 6
 HISTORY_MAX_RECORDS: Final = 360
 
 # --- Forecast horizon ---
