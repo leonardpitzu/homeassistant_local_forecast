@@ -15,16 +15,16 @@ Seasons, time of day, and conditions all matter.
 | 12-state weather model | Maps 1:1 to HA condition strings (sunny, rainy, snowy, snowy-rainy, etc.) |
 | Hourly forecast | 12 hours ahead, probabilistic, with precipitation type |
 | Daily forecast | Today + tomorrow + day after tomorrow aggregated from hourly |
-| Frontal detection | Warm, cold, occluded — from pressure acceleration and wind shift |
+| Frontal detection | Warm, cold, occluded - from pressure acceleration and wind shift |
 | Precipitation typing | Wet-bulb temperature: rain vs sleet vs snow |
 | Energy-balance temperature | Diurnal cycle, radiative cooling, thermal inertia |
 | Clausius-Clapeyron humidity | Conservation of mixing ratio as temperature changes |
 | Kalman sensor smoothing | Per-channel 1-D filter, rejects spikes |
 | Day/night awareness | Swaps sunny/clear-night from `sun.sun` entity |
-| Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory — no icon flicker |
+| Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory - no icon flicker |
 | Unit auto-conversion | Accepts hPa/inHg/kPa, C/F, m-s/km-h/mph/knots |
 | Pixel display ready | Condition maps directly to ESPHome icon names |
-| Satellite map (optional) | Interactive pan/zoom EUMETSAT view, centred on your home — off by default |
+| Satellite map (optional) | Interactive pan/zoom EUMETSAT view, centred on your home - off by default |
 
 ---
 
@@ -35,7 +35,7 @@ Seasons, time of day, and conditions all matter.
 | `state_estimator.py` | Sensor fusion, Kalman smoothing, trend computation, frontal detection, weather classification, signal smoothing (rain persistence, cloud hysteresis, post-rain cloud memory) |
 | `bayesian_forecaster.py` | Markov transition matrix + Bayesian evidence updates, hourly probability vectors |
 | `physics_models.py` | Energy-balance temperature, Clausius-Clapeyron humidity, damped pressure extrapolation |
-| `weather.py` | HA WeatherEntity — reads sensors, runs pipeline, serves forecasts and attributes |
+| `weather.py` | HA WeatherEntity - reads sensors, runs pipeline, serves forecasts and attributes |
 | `sensor.py` | Standalone sensor entities (precipitation probability, 1h forecast) with history for tile cards and badges |
 
 ```
@@ -108,12 +108,12 @@ First derivative (tendency):
 
 $$\frac{dp}{dt} = \frac{p_{\text{now}} - p_{3\text{h ago}}}{3} \quad [\text{hPa/h}]$$
 
-Second derivative (acceleration — detects approaching fronts):
+Second derivative (acceleration - detects approaching fronts):
 
 $$\frac{d^2p}{dt^2} = \frac{(dp/dt)_{\text{now}} - (dp/dt)_{1\text{h ago}}}{1} \quad [\text{hPa/h}^2]$$
 
 A negative $d^2p/dt^2$ with falling pressure signals an accelerating
-low — the Bayesian layer increases weight on precipitation states.
+low - the Bayesian layer increases weight on precipitation states.
 
 ### QFE to QNH conversion
 
@@ -151,15 +151,15 @@ Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed $< 
 | **Occluded** | Both warm + cold signals | -- | -- | -- |
 
 Wind shift is computed from the cross-product of consecutive direction
-vectors — positive = veering (clockwise), negative = backing.
+vectors - positive = veering (clockwise), negative = backing.
 
 ### Signal smoothing
 
 Three mechanisms prevent icon flicker on the dashboard:
 
-- **Rain persistence** — rain state is held for 20 minutes after rain rate drops below the light-rain threshold.  Prevents the icon from flashing between rainy and cloudy during intermittent showers.
-- **Cloud hysteresis** — a $\pm 0.06$ deadband on cloud-fraction thresholds.  If the current state is cloudy, the cloud fraction must drop below the threshold minus 0.06 to transition to partly-cloudy (and vice versa).  Eliminates rapid toggling at decision boundaries.
-- **Post-rain cloud memory** — after rain ends, a cloud-fraction floor of 0.40 is applied, linearly decaying to zero over 30 minutes.  Real skies stay overcast after rain stops; this prevents an immediate jump to sunny.
+- **Rain persistence** - rain state is held for 20 minutes after rain rate drops below the light-rain threshold.  Prevents the icon from flashing between rainy and cloudy during intermittent showers.
+- **Cloud hysteresis** - a $\pm 0.06$ deadband on cloud-fraction thresholds.  If the current state is cloudy, the cloud fraction must drop below the threshold minus 0.06 to transition to partly-cloudy (and vice versa).  Eliminates rapid toggling at decision boundaries.
+- **Post-rain cloud memory** - after rain ends, a cloud-fraction floor of 0.40 is applied, linearly decaying to zero over 30 minutes.  Real skies stay overcast after rain stops; this prevents an immediate jump to sunny.
 
 ### Energy-balance temperature model
 
@@ -169,9 +169,9 @@ $$\frac{dT}{dt} = \frac{Q_{sw} - Q_{lw} - Q_h}{C}$$
 
 The model evaluates corrections relative to the current observation:
 
-- **Diurnal forcing** — asymmetric curve (slow solar warming, faster radiative cooling) with amplitude from latitude and cloud cover
-- **Radiative cooling** — enhanced for clear nights, approximately 1.5 C/h damped by humidity and wind mixing
-- **Thermal inertia** — time constant $\tau$ depends on wind (faster response) and humidity (slower, latent heat)
+- **Diurnal forcing** - asymmetric curve (slow solar warming, faster radiative cooling) with amplitude from latitude and cloud cover
+- **Radiative cooling** - enhanced for clear nights, approximately 1.5 C/h damped by humidity and wind mixing
+- **Thermal inertia** - time constant $\tau$ depends on wind (faster response) and humidity (slower, latent heat)
 
 ### Clausius-Clapeyron humidity model
 
@@ -235,9 +235,9 @@ After evidence multiplication, the vector is renormalised to sum to 1.
 
 Physical impossibilities are zeroed out:
 
-- **No snow above 6 C** — $p(\text{snowy}) = p(\text{snowy-rainy}) = 0$ if $T > 6$
-- **Day/night swap** — $p(\text{sunny}) \leftrightarrow p(\text{clear-night})$ based on whether the forecast hour falls between sunrise and sunset
-- **Precipitation probability** — sum of all wet-state probabilities (rainy + pouring + snowy + snowy-rainy + lightning-rainy)
+- **No snow above 6 C** - $p(\text{snowy}) = p(\text{snowy-rainy}) = 0$ if $T > 6$
+- **Day/night swap** - $p(\text{sunny}) \leftrightarrow p(\text{clear-night})$ based on whether the forecast hour falls between sunrise and sunset
+- **Precipitation probability** - sum of all wet-state probabilities (rainy + pouring + snowy + snowy-rainy + lightning-rainy)
 
 </details>
 
@@ -285,12 +285,12 @@ and can be graphed in tile cards, used in badges, and referenced in automations.
 | Entity | Unit | Description |
 |---|---|---|
 | `sensor.local_weather_forecast_precipitation_probability` | % | Probability of rain in the next 6 hours |
-| `sensor.local_weather_forecast_1h_forecast` | — | Forecast condition for +1h (human-readable text) |
+| `sensor.local_weather_forecast_1h_forecast` | - | Forecast condition for +1h (human-readable text) |
 | `sensor.local_weather_forecast_next_hour_precipitation_probability` | % | Precipitation probability for +1h |
 
 All sensors update automatically when the weather entity recalculates.
 The `%` sensors have `state_class: measurement` so HA records long-term
-statistics — you get min/max/mean in the history panel and trend graphs
+statistics - you get min/max/mean in the history panel and trend graphs
 in tile cards.
 
 </details>
@@ -303,15 +303,15 @@ in tile cards.
 <summary>Interactive pan/zoom satellite view, centred live on your home location</summary>
 
 An optional, self-contained pan/zoom satellite viewer for glancing at what is
-actually heading your way — handy when a weather alert fires and you want to
+actually heading your way - handy when a weather alert fires and you want to
 see the incoming system. It is **off by default**; enable it under
-**Settings → Devices & Services → Local Weather Forecast → Configure** by
+**Settings -> Devices & Services -> Local Weather Forecast -> Configure** by
 ticking **Enable satellite map**. When disabled, the endpoint is not served at
 all.
 
 When enabled, the integration serves a Leaflet viewer at
 `/api/local_forecast/map`. Your browser tiles EUMETSAT's public
-[EUMETView](https://view.eumetsat.int/) WMS endpoint directly — there are **no
+[EUMETView](https://view.eumetsat.int/) WMS endpoint directly - there are **no
 extra entities, no polling, and no API key**. The view opens centred on your
 Home Assistant home location (read live, so moving home in HA settings
 recentres the map) and offers a layer switcher for Geo Colour, Natural Colour,
@@ -352,13 +352,13 @@ Settings, Devices and Services, Add Integration, Local Weather Forecast.
 
 | Field | Required | Description |
 |---|---|---|
-| Pressure sensor | yes | Any pressure entity (hPa, inHg, kPa — auto-converted) |
-| Temperature sensor | yes | Outdoor temperature (C or F — auto-converted) |
+| Pressure sensor | yes | Any pressure entity (hPa, inHg, kPa - auto-converted) |
+| Temperature sensor | yes | Outdoor temperature (C or F - auto-converted) |
 | Humidity sensor | | Outdoor relative humidity (%) |
-| Wind speed sensor | | m/s, km/h, mph, or knots — auto-converted |
+| Wind speed sensor | | m/s, km/h, mph, or knots - auto-converted |
 | Wind direction sensor | | Degrees (0-360) |
-| Solar radiation sensor | | W/m2 — improves cloud estimation |
-| Rain rate sensor | | mm/h — enables live precipitation detection |
+| Solar radiation sensor | | W/m2 - improves cloud estimation |
+| Rain rate sensor | | mm/h - enables live precipitation detection |
 | Elevation | | Station elevation in metres (for QFE to QNH conversion) |
 | Pressure type | | Absolute (QFE) or Sea-level (QNH) |
 | Enable satellite map | | Serves an interactive pan/zoom satellite view at `/api/local_forecast/map` (off by default) |
@@ -390,8 +390,8 @@ Recommended setup: pressure + temperature + humidity + wind speed + wind directi
 
 ### Minimal setup (no extra cards needed)
 
-The weather entity works out of the box with native HA cards.  No
-conditional cards, no template icons — the entity already handles
+The weather entity works with native HA cards directly.  No
+conditional cards, no template icons - the entity already handles
 precipitation type, day/night, and all 12 conditions internally.
 
 ```yaml
@@ -414,7 +414,7 @@ cards:
 ### Tile card with precipitation trend graph
 
 The 6h precipitation probability sensor has history, so the tile card
-can show a trend graph natively — no extra integrations needed:
+can show a trend graph natively - no extra integrations needed:
 
 ```yaml
 type: tile
@@ -453,7 +453,7 @@ add a markdown card below the weather cards:
 
 ### Standard weather card
 
-Works out of the box:
+Works as-is:
 
 ```yaml
 type: weather-forecast
@@ -562,7 +562,7 @@ cards:
 
 The weather entity condition maps directly to ESPHome pixel icon names.
 The integration already handles day/night (sunny vs clear-night), precipitation
-type (rain/snow/sleet via wet-bulb temperature), and storms — so the template
+type (rain/snow/sleet via wet-bulb temperature), and storms - so the template
 is a simple one-to-one map with night overrides for conditions that have
 dedicated night icons in the firmware (`weather_cloudy_night`, `weather_rainy_night`).
 
@@ -634,7 +634,7 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 - Check that your sensors are reporting correct values in Developer Tools, States
 - Verify pressure type setting matches your sensor (QFE vs QNH)
-- If precipitation type is wrong, check wet-bulb in attributes — should be below -2 C for snow
+- If precipitation type is wrong, check wet-bulb in attributes - should be below -2 C for snow
 
 **Forecast does not update**
 
@@ -643,8 +643,8 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 **Temperature seems off**
 
-- Check `unit_of_measurement` on your sensor — the integration auto-converts F, but the attribute must be set correctly
-- Elevation affects QFE-to-QNH which affects frontal detection — verify it is correct
+- Check `unit_of_measurement` on your sensor - the integration auto-converts F, but the attribute must be set correctly
+- Elevation affects QFE-to-QNH which affects frontal detection - verify it is correct
 
 **Exceptional shows too often**
 
@@ -656,7 +656,7 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 - Pressure outside 870-1090 hPa after unit conversion is rejected (returns unavailable)
 - Temperature outside -60 to 60 C after conversion is rejected
 - Humidity is clamped to 0-100%, wind speed to 0-60 m/s
-- Check `unit_of_measurement` attribute on your sensor entities — the integration relies on it for auto-conversion
+- Check `unit_of_measurement` attribute on your sensor entities - the integration relies on it for auto-conversion
 
 </details>
 
@@ -666,7 +666,7 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 If you're having issues with the integration, there are two ways to enable debug logging.
 
-### Option 1 — YAML configuration
+### Option 1 - YAML configuration
 
 Add the following to your `configuration.yaml` and restart Home Assistant:
 
@@ -677,13 +677,13 @@ logger:
     custom_components.local_weather_forecast: debug
 ```
 
-### Option 2 — Home Assistant UI
+### Option 2 - Home Assistant UI
 
-1. Go to **Settings** → **Devices & Services**.
+1. Go to **Settings** -> **Devices & Services**.
 2. Find the **Local Weather Forecast** integration and click the **⋮** menu.
 3. Select **Enable debug logging**.
 4. Reproduce the issue.
-5. Click **Disable debug logging** — the browser will download a log file you can inspect or attach to a bug report.
+5. Click **Disable debug logging** - the browser will download a log file you can inspect or attach to a bug report.
 
 Debug output includes sensor values after unit conversion, current weather state classification, and forecast summary for the next hour.
 
@@ -691,4 +691,4 @@ Debug output includes sensor values after unit conversion, current weather state
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
