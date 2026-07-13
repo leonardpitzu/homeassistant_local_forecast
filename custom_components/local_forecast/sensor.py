@@ -23,79 +23,16 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
+from .classifiers import (
+    BAROMETER_OPTIONS,
+    FRONT_OPTIONS,
+    TENDENCY_DIRECTION_OPTIONS,
+    barometer_state,
+    front_state,
+    tendency_direction,
+)
 from .const import DOMAIN
 from .pressure_history import PressureHistory
-
-# Sea-level pressure bands (hPa) for the barometer enum, low → high.
-_BAROMETER_OPTIONS = ["stormy", "rain", "change", "fair", "very_dry"]
-_BAROMETER_BANDS = (985.0, 1005.0, 1020.0, 1035.0)
-# Tendency (hPa/h) beyond which the needle is read one category up/down.
-_BAROMETER_TENDENCY_STEP = 0.5
-
-
-def _barometer_state(
-    pressure: float | None, tendency: float | None
-) -> str | None:
-    """Classify sea-level pressure into a tendency-aware barometer category."""
-    if pressure is None:
-        return None
-    band = 0
-    for threshold in _BAROMETER_BANDS:
-        if pressure >= threshold:
-            band += 1
-    if tendency is not None:
-        if tendency <= -_BAROMETER_TENDENCY_STEP:
-            band -= 1
-        elif tendency >= _BAROMETER_TENDENCY_STEP:
-            band += 1
-    band = max(0, min(len(_BAROMETER_OPTIONS) - 1, band))
-    return _BAROMETER_OPTIONS[band]
-
-
-# Pressure-tendency direction enum (companion to the numeric sensor).
-# Thresholds in hPa/h: |t| < 0.3 steady, 0.3-1.0 slow, >= 1.0 fast.
-_TENDENCY_DIRECTION_OPTIONS = [
-    "falling_fast",
-    "falling",
-    "steady",
-    "rising",
-    "rising_fast",
-]
-_TENDENCY_STEADY = 0.3
-_TENDENCY_FAST = 1.0
-
-
-def _tendency_direction(tendency: float | None) -> str | None:
-    """Classify a pressure tendency (hPa/h) into a direction enum."""
-    if tendency is None:
-        return None
-    if tendency >= _TENDENCY_FAST:
-        return "rising_fast"
-    if tendency >= _TENDENCY_STEADY:
-        return "rising"
-    if tendency <= -_TENDENCY_FAST:
-        return "falling_fast"
-    if tendency <= -_TENDENCY_STEADY:
-        return "falling"
-    return "steady"
-
-
-# Frontal-passage identity as a single enum.  The three signatures can
-# overlap; report the most-developed one (occluded > cold > warm).
-_FRONT_OPTIONS = ["none", "warm", "cold", "occluded"]
-
-
-def _front_state(
-    warm: bool | None, cold: bool | None, occluded: bool | None
-) -> str:
-    """Collapse the three frontal flags into one mutually-exclusive state."""
-    if occluded:
-        return "occluded"
-    if cold:
-        return "cold"
-    if warm:
-        return "warm"
-    return "none"
 
 # HA condition string → human-readable label
 _CONDITION_LABELS: dict[str, str] = {
@@ -359,7 +296,7 @@ class PressureTendencyDirectionSensor(_ForecastSensorBase):
 
     _attr_translation_key = "pressure_tendency_direction"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = _TENDENCY_DIRECTION_OPTIONS
+    _attr_options = TENDENCY_DIRECTION_OPTIONS
 
     def __init__(
         self, entry, weather_entity, device_info, history: PressureHistory
@@ -373,7 +310,7 @@ class PressureTendencyDirectionSensor(_ForecastSensorBase):
         tendency = self._history.tendency_per_hour(
             time.time(), self._weather.native_pressure
         )
-        return _tendency_direction(tendency)
+        return tendency_direction(tendency)
 
 
 class PressureSynopticSensor(_ForecastSensorBase):
@@ -403,7 +340,7 @@ class BarometerSensor(_ForecastSensorBase):
 
     _attr_translation_key = "barometer"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = _BAROMETER_OPTIONS
+    _attr_options = BAROMETER_OPTIONS
 
     def __init__(
         self, entry, weather_entity, device_info, history: PressureHistory
@@ -416,7 +353,7 @@ class BarometerSensor(_ForecastSensorBase):
     def native_value(self) -> str | None:
         pressure = self._weather.native_pressure
         tendency = self._history.tendency_per_hour(time.time(), pressure)
-        return _barometer_state(pressure, tendency)
+        return barometer_state(pressure, tendency)
 
 
 class HourlyForecastSensor(_ForecastSensorBase):
@@ -449,7 +386,7 @@ class FrontSensor(_ForecastSensorBase):
 
     _attr_translation_key = "front"
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = _FRONT_OPTIONS
+    _attr_options = FRONT_OPTIONS
 
     def __init__(self, entry, weather_entity, device_info) -> None:
         super().__init__(entry, weather_entity, device_info)
@@ -458,7 +395,7 @@ class FrontSensor(_ForecastSensorBase):
     @property
     def native_value(self) -> str:
         attrs = self._weather.extra_state_attributes
-        return _front_state(
+        return front_state(
             attrs.get("front_warm"),
             attrs.get("front_cold"),
             attrs.get("front_occluded"),

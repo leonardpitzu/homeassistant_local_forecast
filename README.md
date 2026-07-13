@@ -40,6 +40,7 @@ Seasons, time of day, and conditions all matter.
 | `weather.py` | HA WeatherEntity - reads sensors, runs pipeline, serves forecasts and attributes |
 | `sensor.py` | Standalone sensor entities - precipitation, forecast condition, sea-level pressure, tendency (+ direction enum), synoptic mean, barometer enum, hourly-forecast meteogram feed, and the `front` enum |
 | `pressure_history.py` | Hourly sea-level-pressure ring buffer (24h window), persisted across restarts; feeds the tendency, synoptic-mean, and barometer sensors |
+| `classifiers.py` | Pure display-state classifiers - barometer category, pressure-tendency direction, and frontal identity (no HA dependency) |
 
 ```
  Sensors                 State Estimator              Bayesian Forecaster
