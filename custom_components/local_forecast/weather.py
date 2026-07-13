@@ -333,6 +333,8 @@ class LocalForecastWeather(WeatherEntity):
         )
         if buffer is not None and 870.0 <= s.pressure <= 1090.0:
             buffer.record(time.time(), s.pressure)
+
+    def _sun_elevation(self) -> float:
         """Return current sun elevation in degrees from sun.sun entity."""
         sun = self.hass.states.get("sun.sun")
         if sun:
