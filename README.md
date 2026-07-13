@@ -15,11 +15,13 @@ Seasons, time of day, and conditions all matter.
 | 12-state weather model | Maps 1:1 to HA condition strings (sunny, rainy, snowy, snowy-rainy, etc.) |
 | Hourly forecast | 12 hours ahead, probabilistic, with precipitation type |
 | Daily forecast | Today + tomorrow + day after tomorrow aggregated from hourly |
-| Frontal detection | Warm, cold, occluded - from pressure acceleration and wind shift |
+| Frontal detection | Warm, cold, occluded - exposed as a single `front` enum sensor |
 | Precipitation typing | Wet-bulb temperature: rain vs sleet vs snow |
+| Pressure suite | Sea-level pressure, WMO 3-hour tendency (+ direction enum), 24-hour synoptic mean, and a tendency-aware barometer enum - all standalone sensors |
+| Meteogram feed | Hourly-forecast sensor carrying the full 12h list as an attribute for chart cards - no MQTT publish/discovery workaround needed |
 | Energy-balance temperature | Diurnal cycle, radiative cooling, thermal inertia |
 | Clausius-Clapeyron humidity | Conservation of mixing ratio as temperature changes |
-| Kalman sensor smoothing | Per-channel 1-D filter, rejects spikes |
+| Kalman sensor smoothing | Per-channel 1-D filter, rejects spikes, seeds from the first reading (correct on restart, no warm-up ramp) |
 | Day/night awareness | Swaps sunny/clear-night from `sun.sun` entity |
 | Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory - no icon flicker |
 | Unit auto-conversion | Accepts hPa/inHg/kPa, C/F, m-s/km-h/mph/knots |
@@ -36,7 +38,8 @@ Seasons, time of day, and conditions all matter.
 | `bayesian_forecaster.py` | Markov transition matrix + Bayesian evidence updates, hourly probability vectors |
 | `physics_models.py` | Energy-balance temperature, Clausius-Clapeyron humidity, damped pressure extrapolation |
 | `weather.py` | HA WeatherEntity - reads sensors, runs pipeline, serves forecasts and attributes |
-| `sensor.py` | Standalone sensor entities (precipitation probability, 1h forecast) with history for tile cards and badges |
+| `sensor.py` | Standalone sensor entities - precipitation, forecast condition, sea-level pressure, tendency (+ direction enum), synoptic mean, barometer enum, hourly-forecast meteogram feed, and the `front` enum |
+| `pressure_history.py` | Hourly sea-level-pressure ring buffer (24h window), persisted across restarts; feeds the tendency, synoptic-mean, and barometer sensors |
 
 ```
  Sensors                 State Estimator              Bayesian Forecaster
@@ -100,7 +103,13 @@ $$\hat{x}_k = \hat{x}_{k-1} + K_k (z_k - \hat{x}_{k-1})$$
 $$K_k = \frac{P_{k-1} + Q}{P_{k-1} + Q + R}$$
 
 where $Q$ is process noise and $R$ is measurement noise, tuned per
-sensor type (pressure: $Q{=}0.01, R{=}0.5$; temperature: $Q{=}0.05, R{=}0.3$).
+sensor type (pressure: $Q{=}0.005, R{=}0.15$; temperature: $Q{=}0.02, R{=}0.3$;
+humidity: $Q{=}0.05, R{=}1.0$; wind: $Q{=}0.1, R{=}0.5$).
+
+Each channel **seeds from its first valid reading** instead of ramping up
+from zero, so the first published value is the real measurement - no
+multi-minute warm-up after a Home Assistant restart.  Out-of-range inputs
+are rejected before they reach the filter, so the seed is never junk.
 
 ### Pressure trends
 
@@ -146,9 +155,9 @@ Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed $< 
 
 | Front | Pressure | Wind | Temperature | Humidity |
 |---|---|---|---|---|
-| **Warm** | Falling $> 1$ hPa/h | Backing (CCW shift) | Rising | Rising $> 2$ %/h |
-| **Cold** | Trough (accel $< -0.5$) | Veering (CW shift) | Dropping $> 1$ C/h | -- |
-| **Occluded** | Both warm + cold signals | -- | -- | -- |
+| **Warm** | Falling $> 1$ hPa/h | Backing (CCW shift $< -10$ deg/h) | Rising | Rising $> 2$ %/h |
+| **Cold** | Trough (accel $> 0.5$) | Veering (CW shift $> 15$ deg/h) | Dropping $> 1$ C/h | -- |
+| **Occluded** | Falling $> 2$ hPa/h | Large shift ($\lvert\Delta\rvert > 20$ deg/h) | -- | Dew depression $< 2$ C |
 
 Wind shift is computed from the cross-product of consecutive direction
 vectors - positive = veering (clockwise), negative = backing.
@@ -257,9 +266,9 @@ Physical impossibilities are zeroed out:
 | `wet_bulb` | float | Degrees C |
 | `wind_force` | int | Beaufort number (0-12) |
 | `wind_force_description` | str | Beaufort name (e.g. "Gentle breeze") |
-| `front_warm` | bool | Warm front detected |
-| `front_cold` | bool | Cold front detected |
-| `front_occluded` | bool | Occluded front detected |
+| `front_warm` | bool | Warm front detected (also surfaced as the `front` enum sensor) |
+| `front_cold` | bool | Cold front detected (also surfaced as the `front` enum sensor) |
+| `front_occluded` | bool | Occluded front detected (also surfaced as the `front` enum sensor) |
 | `next_hour_condition` | str | HA condition for hour +1 |
 | `next_hour_precip_probability` | int | 0-100 for hour +1 |
 | `precip_probability_6h` | int | Max hourly rain probability over next 6h |
@@ -282,15 +291,37 @@ Key forecast values are also exposed as standalone sensor entities.  Unlike
 weather entity attributes, sensors have their own history in the HA recorder
 and can be graphed in tile cards, used in badges, and referenced in automations.
 
-| Entity | Unit | Description |
+All entity IDs are prefixed `sensor.local_weather_forecast_`.
+
+| Entity (`sensor.local_weather_forecast_…`) | Type | Description |
 |---|---|---|
-| `sensor.local_weather_forecast_precipitation_probability` | % | Probability of rain in the next 6 hours |
-| `sensor.local_weather_forecast_1h_forecast` | - | Forecast condition for +1h (human-readable text) |
-| `sensor.local_weather_forecast_next_hour_precipitation_probability` | % | Precipitation probability for +1h |
+| `precipitation_probability` | % | Max rain probability over the next 6 hours |
+| `1h_forecast` | text | Forecast condition for +1h (human-readable) |
+| `next_hour_precipitation_probability` | % | Precipitation probability for +1h |
+| `sea_level_pressure` | hPa | Sea-level (QNH) pressure - the value feeding the weather entity |
+| `pressure_tendency` | hPa/h | WMO 3-hour pressure tendency (the real number, for charts/automations) |
+| `pressure_tendency_direction` | enum | `falling_fast` / `falling` / `steady` / `rising` / `rising_fast`, with arrow icons |
+| `pressure_synoptic` | hPa | 24-hour rolling mean of sea-level pressure |
+| `barometer` | enum | Tendency-aware needle: `stormy` / `rain` / `change` / `fair` / `very_dry` |
+| `hourly_forecast` | timestamp | Generation time; the `forecast` attribute carries the full 12h list for meteogram cards |
+| `front` | enum | Frontal passage: `none` / `warm` / `cold` / `occluded` |
+
+The `barometer`, `pressure_tendency_direction`, and `front` sensors are
+`device_class: enum` with per-state icons (from `icons.json`), so a single
+badge shows the right symbol with no template logic.
+
+The pressure ring buffer behind `pressure_tendency` and `pressure_synoptic`
+is **persisted across restarts** (via `RestoreEntity`), so the 3-hour tendency
+and 24-hour mean survive a reboot instead of warming up for hours.
+
+These entities are designed to **retire common dashboard workarounds**: the
+pressure sensors replace statistics/derivative helpers, and `hourly_forecast`
+replaces the usual `weather.get_forecasts` -> MQTT publish -> discovery-sensor
+chain used to feed meteogram cards.
 
 All sensors update automatically when the weather entity recalculates.
-The `%` sensors have `state_class: measurement` so HA records long-term
-statistics - you get min/max/mean in the history panel and trend graphs
+The `%` and `hPa` sensors have `state_class: measurement` so HA records
+long-term statistics - min/max/mean in the history panel and trend graphs
 in tile cards.
 
 </details>
@@ -432,6 +463,9 @@ Native HA badges appear at the top of a dashboard view:
 badges:
   - entity: sensor.local_weather_forecast_1h_forecast
   - entity: sensor.local_weather_forecast_precipitation_probability
+  - entity: sensor.local_weather_forecast_barometer
+  - entity: sensor.local_weather_forecast_pressure_tendency_direction
+  - entity: sensor.local_weather_forecast_front
 ```
 
 ### Adding pressure trend and frontal alerts
@@ -648,8 +682,8 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 **Exceptional shows too often**
 
-- This state triggers on extreme pressure (below 970 or above 1050 hPa) or temperature (above 42 or below -25 C)
-- If your elevation is wrong, the QNH conversion may produce extreme values
+- This state triggers on a very rapid pressure fall (steeper than about 4 hPa/h - a bomb-cyclone signature)
+- If your elevation or pressure type is wrong, the QNH conversion can produce extreme trends that trip it
 
 **Sensor values rejected**
 
