@@ -58,17 +58,25 @@
           "fair": "Fair",
           "very_dry": "Very dry"
         }
-      }
-    },
-    "binary_sensor": {
-      "front_warm": {
-        "name": "Warm front"
       },
-      "front_cold": {
-        "name": "Cold front"
+      "pressure_tendency_direction": {
+        "name": "Pressure tendency direction",
+        "state": {
+          "falling_fast": "Falling fast",
+          "falling": "Falling",
+          "steady": "Steady",
+          "rising": "Rising",
+          "rising_fast": "Rising fast"
+        }
       },
-      "front_occluded": {
-        "name": "Occluded front"
+      "front": {
+        "name": "Front",
+        "state": {
+          "none": "None",
+          "warm": "Warm front",
+          "cold": "Cold front",
+          "occluded": "Occluded front"
+        }
       }
     }
   }

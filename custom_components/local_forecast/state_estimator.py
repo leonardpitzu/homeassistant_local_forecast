@@ -101,6 +101,7 @@ class _KalmanChannel:
     p: float = 1.0
     q: float = 0.01             # process noise
     r: float = 0.1              # measurement noise
+    initialized: bool = False   # seed x from the first valid reading
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +321,15 @@ class StateEstimator:
     def _kalman(self, channel: str, measurement: float) -> float:
         k = self._kf[channel]
         if not math.isfinite(measurement):
+            return k.x
+        # Seed from the first valid reading instead of ramping up from
+        # x=0.  Ramping published physically-impossible values (e.g. a
+        # sea-level pressure climbing 0 -> 970 -> 983 -> ...) for minutes
+        # after every restart; seeding makes the first sample already true.
+        if not k.initialized:
+            k.x = measurement
+            k.p = k.r
+            k.initialized = True
             return k.x
         k.p += k.q
         denom = k.p + k.r

@@ -10,6 +10,25 @@
           "fair": "mdi:weather-sunny",
           "very_dry": "mdi:weather-sunny-alert"
         }
+      },
+      "pressure_tendency_direction": {
+        "default": "mdi:trending-neutral",
+        "state": {
+          "falling_fast": "mdi:chevron-double-down",
+          "falling": "mdi:trending-down",
+          "steady": "mdi:trending-neutral",
+          "rising": "mdi:trending-up",
+          "rising_fast": "mdi:chevron-double-up"
+        }
+      },
+      "front": {
+        "default": "mdi:minus-circle-outline",
+        "state": {
+          "none": "mdi:minus-circle-outline",
+          "warm": "mdi:thermometer-chevron-up",
+          "cold": "mdi:thermometer-chevron-down",
+          "occluded": "mdi:call-merge"
+        }
       }
     }
   }

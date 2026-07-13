@@ -14,11 +14,7 @@ from .pressure_history import PressureHistory
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [
-    Platform.WEATHER,
-    Platform.SENSOR,
-    Platform.BINARY_SENSOR,
-]
+PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
 
 
 def _map_enabled(entry: ConfigEntry) -> bool:
@@ -52,11 +48,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(LocalForecastMapView(hass))
         hass.data[DOMAIN]["map_view_registered"] = True
 
-    # Weather must be set up before Sensor/Binary Sensor (they read weather_entity)
+    # Weather must be set up before Sensor (sensor reads weather_entity)
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.WEATHER])
-    await hass.config_entries.async_forward_entry_setups(
-        entry, [Platform.SENSOR, Platform.BINARY_SENSOR]
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 

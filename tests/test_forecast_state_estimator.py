@@ -87,6 +87,18 @@ class TestStateEstimatorBasic:
         # Should not jump to 1020 — Kalman damps it
         assert est.state.pressure < 1020.0
 
+    def test_first_reading_seeds_without_warmup(self):
+        """First reading is published as-is — no ramp from zero (junk data)."""
+        est = StateEstimator()
+        est.update(
+            _reading(pressure=1016.9, temp=16.4, humidity=80.0, wind=4.0)
+        )
+        s = est.state
+        assert abs(s.pressure - 1016.9) < 0.01
+        assert abs(s.temperature - 16.4) < 0.01
+        assert abs(s.humidity - 80.0) < 0.01
+        assert abs(s.wind_speed - 4.0) < 0.01
+
 
 class TestTrends:
     """Pressure and temperature trend computation."""

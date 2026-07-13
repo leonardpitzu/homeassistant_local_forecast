@@ -51,6 +51,52 @@ def _barometer_state(
     band = max(0, min(len(_BAROMETER_OPTIONS) - 1, band))
     return _BAROMETER_OPTIONS[band]
 
+
+# Pressure-tendency direction enum (companion to the numeric sensor).
+# Thresholds in hPa/h: |t| < 0.3 steady, 0.3-1.0 slow, >= 1.0 fast.
+_TENDENCY_DIRECTION_OPTIONS = [
+    "falling_fast",
+    "falling",
+    "steady",
+    "rising",
+    "rising_fast",
+]
+_TENDENCY_STEADY = 0.3
+_TENDENCY_FAST = 1.0
+
+
+def _tendency_direction(tendency: float | None) -> str | None:
+    """Classify a pressure tendency (hPa/h) into a direction enum."""
+    if tendency is None:
+        return None
+    if tendency >= _TENDENCY_FAST:
+        return "rising_fast"
+    if tendency >= _TENDENCY_STEADY:
+        return "rising"
+    if tendency <= -_TENDENCY_FAST:
+        return "falling_fast"
+    if tendency <= -_TENDENCY_STEADY:
+        return "falling"
+    return "steady"
+
+
+# Frontal-passage identity as a single enum.  The three signatures can
+# overlap; report the most-developed one (occluded > cold > warm).
+_FRONT_OPTIONS = ["none", "warm", "cold", "occluded"]
+
+
+def _front_state(
+    warm: bool | None, cold: bool | None, occluded: bool | None
+) -> str:
+    """Collapse the three frontal flags into one mutually-exclusive state."""
+    if occluded:
+        return "occluded"
+    if cold:
+        return "cold"
+    if warm:
+        return "warm"
+    return "none"
+
 # HA condition string → human-readable label
 _CONDITION_LABELS: dict[str, str] = {
     "sunny": "Sunny",
@@ -132,6 +178,9 @@ async def async_setup_entry(
             PressureTendencySensor(
                 entry, weather_entity, device_info, pressure_history
             ),
+            PressureTendencyDirectionSensor(
+                entry, weather_entity, device_info, pressure_history
+            ),
             PressureSynopticSensor(
                 entry, weather_entity, device_info, pressure_history
             ),
@@ -139,6 +188,7 @@ async def async_setup_entry(
                 entry, weather_entity, device_info, pressure_history
             ),
             HourlyForecastSensor(entry, weather_entity, device_info),
+            FrontSensor(entry, weather_entity, device_info),
         ],
         True,
     )
@@ -304,6 +354,28 @@ class PressureTendencySensor(_ForecastSensorBase, RestoreEntity):
         )
 
 
+class PressureTendencyDirectionSensor(_ForecastSensorBase):
+    """Direction companion to the numeric tendency — an enum for badge icons."""
+
+    _attr_translation_key = "pressure_tendency_direction"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = _TENDENCY_DIRECTION_OPTIONS
+
+    def __init__(
+        self, entry, weather_entity, device_info, history: PressureHistory
+    ) -> None:
+        super().__init__(entry, weather_entity, device_info)
+        self._history = history
+        self._attr_unique_id = f"{entry.entry_id}_pressure_tendency_direction"
+
+    @property
+    def native_value(self) -> str | None:
+        tendency = self._history.tendency_per_hour(
+            time.time(), self._weather.native_pressure
+        )
+        return _tendency_direction(tendency)
+
+
 class PressureSynopticSensor(_ForecastSensorBase):
     """24-hour rolling mean of sea-level pressure (hPa)."""
 
@@ -370,6 +442,27 @@ class HourlyForecastSensor(_ForecastSensorBase):
     @property
     def extra_state_attributes(self) -> dict:
         return {"forecast": self._weather.hourly_forecast_list()}
+
+
+class FrontSensor(_ForecastSensorBase):
+    """Frontal-passage identity as a single mutually-exclusive enum."""
+
+    _attr_translation_key = "front"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = _FRONT_OPTIONS
+
+    def __init__(self, entry, weather_entity, device_info) -> None:
+        super().__init__(entry, weather_entity, device_info)
+        self._attr_unique_id = f"{entry.entry_id}_front"
+
+    @property
+    def native_value(self) -> str:
+        attrs = self._weather.extra_state_attributes
+        return _front_state(
+            attrs.get("front_warm"),
+            attrs.get("front_cold"),
+            attrs.get("front_occluded"),
+        )
 
 
 @dataclass
