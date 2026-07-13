@@ -113,6 +113,7 @@ class LocalForecastWeather(WeatherEntity):
         # Cached forecasts
         self._hourly: list[HourForecast] = []
         self._condition: str | None = None
+        self._forecast_ts: datetime | None = None
         self._debounce_cancel: callback | None = None
         self._min_interval: float = 30.0  # seconds between full recalculations
 
@@ -323,7 +324,15 @@ class LocalForecastWeather(WeatherEntity):
                 h1.temperature, h1.precipitation_probability,
             )
 
-    def _sun_elevation(self) -> float:
+        # Timestamp of this forecast generation (state of the hourly-forecast
+        # sensor) and hourly sea-level-pressure sample for the pressure ring
+        # buffer that feeds the tendency / synoptic / barometer sensors.
+        self._forecast_ts = dt_util.now()
+        buffer = self.hass.data[DOMAIN][self._entry.entry_id].get(
+            "pressure_history"
+        )
+        if buffer is not None and 870.0 <= s.pressure <= 1090.0:
+            buffer.record(time.time(), s.pressure)
         """Return current sun elevation in degrees from sun.sun entity."""
         sun = self.hass.states.get("sun.sun")
         if sun:
@@ -496,6 +505,40 @@ class LocalForecastWeather(WeatherEntity):
                 )
             )
         return result
+
+    @property
+    def forecast_generated(self) -> datetime | None:
+        """Timestamp of the most recent forecast generation."""
+        return self._forecast_ts
+
+    def hourly_forecast_list(self) -> list[dict[str, Any]]:
+        """Synchronous hourly forecast as plain dicts (for the meteogram sensor).
+
+        Mirrors what ``get_forecasts`` returns but in the entity's native
+        units, so a dashboard meteogram card can read it straight off the
+        sensor's ``forecast`` attribute without a websocket subscription.
+        """
+        if not self._hourly:
+            return []
+        now = dt_util.now()
+        out: list[dict[str, Any]] = []
+        for hf in self._hourly:
+            ft = now + timedelta(hours=hf.hours_ahead)
+            out.append(
+                {
+                    "datetime": ft.isoformat(),
+                    "condition": hf.condition,
+                    "temperature": round(hf.temperature, 1),
+                    "humidity": hf.humidity,
+                    "pressure": round(hf.pressure, 1),
+                    "precipitation_probability": hf.precipitation_probability,
+                    "precipitation": round(hf.precipitation_amount, 1),
+                    "wind_speed": round(hf.wind_speed, 1),
+                    "wind_bearing": round(hf.wind_bearing),
+                    "is_daytime": hf.is_daytime,
+                }
+            )
+        return out
 
     async def async_forecast_daily(self) -> list[Forecast] | None:
         """Aggregate hourly into today / tomorrow / day-after-tomorrow.

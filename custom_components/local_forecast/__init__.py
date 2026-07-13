@@ -10,10 +10,15 @@ from homeassistant.core import HomeAssistant
 
 from .const import CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP, DOMAIN
 from .map import LocalForecastMapView
+from .pressure_history import PressureHistory
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.WEATHER,
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+]
 
 
 def _map_enabled(entry: ConfigEntry) -> bool:
@@ -26,7 +31,13 @@ def _map_enabled(entry: ConfigEntry) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Local Weather Forecast from a config entry."""
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"config": entry.data}
+    hass.data[DOMAIN][entry.entry_id] = {
+        "config": entry.data,
+        # Shared hourly sea-level-pressure buffer feeding the tendency,
+        # synoptic-mean and barometer sensors.  The weather entity records
+        # into it; the pressure-tendency sensor persists it across restarts.
+        "pressure_history": PressureHistory(),
+    }
 
     # Optional satellite map: serve the pan/zoom view only while at least one
     # entry enables it. The HTTP view is registered once for the lifetime of
@@ -41,9 +52,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(LocalForecastMapView(hass))
         hass.data[DOMAIN]["map_view_registered"] = True
 
-    # Weather must be set up before Sensor (sensor reads weather_entity)
+    # Weather must be set up before Sensor/Binary Sensor (they read weather_entity)
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.WEATHER])
-    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
+    await hass.config_entries.async_forward_entry_setups(
+        entry, [Platform.SENSOR, Platform.BINARY_SENSOR]
+    )
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 

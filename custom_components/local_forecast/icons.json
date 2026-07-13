@@ -1,0 +1,16 @@
+{
+  "entity": {
+    "sensor": {
+      "barometer": {
+        "default": "mdi:gauge",
+        "state": {
+          "stormy": "mdi:weather-lightning-rainy",
+          "rain": "mdi:weather-rainy",
+          "change": "mdi:weather-partly-cloudy",
+          "fair": "mdi:weather-sunny",
+          "very_dry": "mdi:weather-sunny-alert"
+        }
+      }
+    }
+  }
+}

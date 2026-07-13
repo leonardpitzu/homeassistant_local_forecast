@@ -46,5 +46,30 @@
       "sensor_not_found": "Sensor entity not found",
       "invalid_elevation": "Elevation must be between -500 and 9000 m"
     }
+  },
+  "entity": {
+    "sensor": {
+      "barometer": {
+        "name": "Barometer",
+        "state": {
+          "stormy": "Stormy",
+          "rain": "Rain",
+          "change": "Change",
+          "fair": "Fair",
+          "very_dry": "Very dry"
+        }
+      }
+    },
+    "binary_sensor": {
+      "front_warm": {
+        "name": "Warm front"
+      },
+      "front_cold": {
+        "name": "Cold front"
+      },
+      "front_occluded": {
+        "name": "Occluded front"
+      }
+    }
   }
 }
