@@ -163,6 +163,12 @@ def _build_transition_matrix() -> list[list[float]]:
 
 TRANSITION_MATRIX: list[list[float]] = _build_transition_matrix()
 
+# Condition strings that actually carry precipitation.  Anything else has its
+# expected-precip amount zeroed so cards never read "cloudy, 1mm".
+_PRECIP_CONDITIONS: frozenset[str] = frozenset(
+    {"rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy"}
+)
+
 
 # ---------------------------------------------------------------------------
 #  Bayesian Forecaster
@@ -267,9 +273,6 @@ class BayesianForecaster:
 
             # Zero out precipitation amount when condition is not a precip
             # state — avoids confusing "cloudy, 1mm" on weather cards
-            _PRECIP_CONDITIONS = (
-                "rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy",
-            )
             if condition not in _PRECIP_CONDITIONS:
                 precip_mm = 0.0
 

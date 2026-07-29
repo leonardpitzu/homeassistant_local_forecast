@@ -61,6 +61,30 @@ from .state_estimator import SensorReading, StateEstimator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Severity ranking used to pick the "worst" condition of a day for the daily
+# forecast card (higher = more severe, what a non-technical family cares about).
+_CONDITION_SEVERITY: dict[str, int] = {
+    "lightning-rainy": 11,
+    "exceptional": 10,
+    "pouring": 9,
+    "snowy": 8,
+    "snowy-rainy": 7,
+    "rainy": 6,
+    "fog": 5,
+    "windy": 4,
+    "cloudy": 3,
+    "partlycloudy": 2,
+    "clear-night": 1,
+    "sunny": 0,
+}
+
+# Day+2 extrapolation regresses severe conditions toward milder ones.
+_CONDITION_DECAY: dict[str, str] = {
+    "pouring": "rainy",
+    "lightning-rainy": "rainy",
+    "exceptional": "cloudy",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -113,6 +137,7 @@ class LocalForecastWeather(WeatherEntity):
         # Cached forecasts
         self._hourly: list[HourForecast] = []
         self._condition: str | None = None
+        self._attrs: dict[str, Any] = {}
         self._forecast_ts: datetime | None = None
         self._debounce_cancel: callback | None = None
         self._min_interval: float = 30.0  # seconds between full recalculations
@@ -267,13 +292,18 @@ class LocalForecastWeather(WeatherEntity):
         # Day/night from sun entity
         sunrise_h, sunset_h = self._sun_hours()
         sun_el = self._sun_elevation()
-        now_h = dt_util.now().hour + dt_util.now().minute / 60.0
+        now_local = dt_util.now()
+        now_h = now_local.hour + now_local.minute / 60.0
         s.is_night = not (sunrise_h <= now_h < sunset_h)
+
+        # Cloud fraction: computed once and reused for both the classifier
+        # (section 7 hysteresis) and the temperature model below.
+        cloud = self._estimator.cloud_fraction(sun_el)
 
         # Current state classification.  Cache it for the `condition`
         # property so that reading entity state never mutates the
         # estimator's cloud-hysteresis / rain-persistence state machine.
-        current_idx = self._estimator.classify(sun_el)
+        current_idx = self._estimator.classify(sun_el, cloud_fraction=cloud)
         self._condition = HA_CONDITIONS[current_idx]
 
         _LOGGER.debug(
@@ -282,9 +312,6 @@ class LocalForecastWeather(WeatherEntity):
             s.pressure, s.dp_dt, s.temperature, s.humidity,
             s.wind_speed, HA_CONDITIONS[current_idx], s.is_night,
         )
-
-        # Cloud fraction for temperature model
-        cloud = self._estimator._estimate_cloud_fraction(sun_el)
 
         # Physics models
         temp_model = TemperatureModel(
@@ -324,10 +351,15 @@ class LocalForecastWeather(WeatherEntity):
                 h1.temperature, h1.precipitation_probability,
             )
 
+        # Build the attribute dict once per pipeline run.  Several sensor
+        # entities read `extra_state_attributes` on every weather update, so
+        # rebuilding it per reader was the main avoidable work in the hot path.
+        self._attrs = self._build_attributes()
+
         # Timestamp of this forecast generation (state of the hourly-forecast
         # sensor) and hourly sea-level-pressure sample for the pressure ring
         # buffer that feeds the tendency / synoptic / barometer sensors.
-        self._forecast_ts = dt_util.now()
+        self._forecast_ts = now_local
         buffer = self.hass.data[DOMAIN][self._entry.entry_id].get(
             "pressure_history"
         )
@@ -437,30 +469,36 @@ class LocalForecastWeather(WeatherEntity):
         "Near gale", "Gale", "Strong gale", "Storm",
         "Violent storm", "Hurricane force",
     )
+    # WMO Beaufort upper bounds (m/s) for scales 0-11; at/above the last → 12.
+    _BEAUFORT_THRESHOLDS: Final = (
+        0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9,
+        17.2, 20.8, 24.5, 28.5, 32.7,
+    )
 
-    @staticmethod
-    def _beaufort(wind_ms: float) -> int:
+    @classmethod
+    def _beaufort(cls, wind_ms: float) -> int:
         """Convert wind speed in m/s to Beaufort scale (0-12)."""
-        # WMO thresholds (m/s): 0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9,
-        #                        17.2, 20.8, 24.5, 28.5, 32.7
-        thresholds = (0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9,
-                      17.2, 20.8, 24.5, 28.5, 32.7)
-        for i, t in enumerate(thresholds):
+        for i, t in enumerate(cls._BEAUFORT_THRESHOLDS):
             if wind_ms < t:
                 return i
         return 12
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the attribute dict cached by the last pipeline run."""
+        return self._attrs
+
+    def _build_attributes(self) -> dict[str, Any]:
         s = self._estimator.state
+        force = self._beaufort(s.wind_speed)
         attrs: dict[str, Any] = {
             "pressure_trend": round(s.dp_dt, 2),
             "pressure_acceleration": round(s.d2p_dt2, 2),
             "dew_point": s.dew_point,
             "dew_depression": s.dew_depression,
             "wet_bulb": s.wet_bulb,
-            "wind_force": self._beaufort(s.wind_speed),
-            "wind_force_description": self._BEAUFORT_NAMES[self._beaufort(s.wind_speed)],
+            "wind_force": force,
+            "wind_force_description": self._BEAUFORT_NAMES[force],
             "front_warm": s.front_warm,
             "front_cold": s.front_cold,
             "front_occluded": s.front_occluded,
@@ -639,11 +677,6 @@ class LocalForecastWeather(WeatherEntity):
             if day2_condition == "clear-night":
                 day2_condition = "sunny"
             # Regress severe conditions toward milder
-            _CONDITION_DECAY = {
-                "pouring": "rainy",
-                "lightning-rainy": "rainy",
-                "exceptional": "cloudy",
-            }
             day2_condition = _CONDITION_DECAY.get(day2_condition, day2_condition)
 
             # Humidity regresses toward 55% (continental mean)
@@ -691,23 +724,9 @@ class LocalForecastWeather(WeatherEntity):
         lightning-rainy > exceptional > pouring > snowy > snowy-rainy >
         rainy > fog > windy > cloudy > partlycloudy > clear-night > sunny
         """
-        severity = {
-            "lightning-rainy": 11,
-            "exceptional": 10,
-            "pouring": 9,
-            "snowy": 8,
-            "snowy-rainy": 7,
-            "rainy": 6,
-            "fog": 5,
-            "windy": 4,
-            "cloudy": 3,
-            "partlycloudy": 2,
-            "clear-night": 1,
-            "sunny": 0,
-        }
         if not hours:
             return "cloudy"
         return max(
             (h.condition for h in hours),
-            key=lambda c: severity.get(c, 0),
+            key=lambda c: _CONDITION_SEVERITY.get(c, 0),
         )

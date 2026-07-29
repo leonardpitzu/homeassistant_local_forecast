@@ -10,6 +10,7 @@ No Home Assistant dependencies — pure Python + math.
 
 from __future__ import annotations
 
+import bisect
 import math
 from collections import deque
 from dataclasses import dataclass
@@ -193,11 +194,20 @@ class StateEstimator:
     def history(self) -> list[SensorReading]:
         return list(self._history)
 
+    def cloud_fraction(self, sun_elevation_deg: float = 90.0) -> float:
+        """Public accessor for the blended 0-1 cloud-fraction estimate."""
+        return self._estimate_cloud_fraction(sun_elevation_deg)
+
     # ------------------------------------------------------------------
     #  Classify current weather into one of 12 HA condition indices
     # ------------------------------------------------------------------
 
-    def classify(self, sun_elevation_deg: float = 90.0) -> int:
+    def classify(
+        self,
+        sun_elevation_deg: float = 90.0,
+        *,
+        cloud_fraction: float | None = None,
+    ) -> int:
         """Return the state index that best describes current conditions.
 
         Priority chain (highest first):
@@ -247,7 +257,14 @@ class StateEstimator:
             return S_WINDY
 
         # --- 7 & 8: Cloud cover + day/night (with hysteresis) ---
-        cloud = self._estimate_cloud_fraction(sun_elevation_deg)
+        # Reuse a precomputed base fraction when the caller already has one
+        # (the weather entity needs the same value for its temperature model,
+        # so computing it twice per tick is pure waste).
+        cloud = (
+            self._estimate_cloud_fraction(sun_elevation_deg)
+            if cloud_fraction is None
+            else cloud_fraction
+        )
 
         # Apply post-rain cloud floor: clouds linger after showers
         if self._last_rain_ts is not None and len(self._history) > 0:
@@ -363,14 +380,18 @@ class StateEstimator:
         if len(self._history) < 2:
             return
 
-        now = self._history[-1]
+        # Snapshot the deque once; timestamps are monotonic (append order)
+        # so nearest-sample lookups can bisect instead of scanning 3× each.
+        hist = list(self._history)
+        times = [r.timestamp for r in hist]
+        now = hist[-1]
         t_now = now.timestamp
 
-        ref = self._find_nearest(t_now - 3600)  # ~1 h ago
-        if ref is None and len(self._history) >= 3:
+        ref = self._nearest_sorted(times, hist, t_now - 3600)  # ~1 h ago
+        if ref is None and len(hist) >= 3:
             # Startup fallback: use oldest available reading so trends
             # are not stuck at zero for the first hour after restart.
-            ref = self._history[0]
+            ref = hist[0]
         if ref is not None:
             dt_h = max(0.1, (t_now - ref.timestamp) / 3600)
             # Use raw readings for both endpoints to avoid Kalman
@@ -384,8 +405,8 @@ class StateEstimator:
         #   d²P/dt² ≈ (P(t) − 2·P(t−Δ) + P(t−2Δ)) / Δ²   with Δ ≈ 1.5 h
         # Properly expressed in hPa/h² (the previous version differenced two
         # consecutive readings seconds apart, which was effectively zero).
-        ref_mid = self._find_nearest(t_now - 5400)    # ~1.5 h ago
-        ref_old = self._find_nearest(t_now - 10800)   # ~3 h ago
+        ref_mid = self._nearest_sorted(times, hist, t_now - 5400)    # ~1.5 h ago
+        ref_old = self._nearest_sorted(times, hist, t_now - 10800)   # ~3 h ago
         if ref_mid is not None and ref_old is not None:
             delta_h = 1.5
             self._state.d2p_dt2 = (
@@ -461,15 +482,30 @@ class StateEstimator:
         diff = (newest[1] - oldest[1] + 180) % 360 - 180  # signed shortest arc
         return max(-180.0, min(180.0, diff / dt_h))
 
-    def _find_nearest(self, target_ts: float) -> Optional[SensorReading]:
+    @staticmethod
+    def _nearest_sorted(
+        times: list[float],
+        hist: list[SensorReading],
+        target_ts: float,
+        tolerance_s: float = 1800.0,
+    ) -> Optional[SensorReading]:
+        """Nearest reading to ``target_ts`` via bisect on ascending timestamps.
+
+        ``times`` must be sorted ascending and parallel to ``hist``.  Returns
+        None if the closest sample is more than ``tolerance_s`` away.
+        """
+        if not times:
+            return None
+        idx = bisect.bisect_left(times, target_ts)
         best: Optional[SensorReading] = None
         best_diff = float("inf")
-        for r in self._history:
-            d = abs(r.timestamp - target_ts)
-            if d < best_diff:
-                best_diff = d
-                best = r
-        if best_diff > 1800:  # reject if >30 min from target
+        for i in (idx - 1, idx):
+            if 0 <= i < len(times):
+                d = abs(times[i] - target_ts)
+                if d < best_diff:
+                    best_diff = d
+                    best = hist[i]
+        if best is None or best_diff > tolerance_s:
             return None
         return best
 
