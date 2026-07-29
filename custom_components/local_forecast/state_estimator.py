@@ -14,7 +14,6 @@ import bisect
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
 
 from .const import (
     FOG_DEW_DEPRESSION,
@@ -42,7 +41,6 @@ from .const import (
     WIND_STRONG,
 )
 
-
 # ---------------------------------------------------------------------------
 #  Data containers
 # ---------------------------------------------------------------------------
@@ -54,11 +52,11 @@ class SensorReading:
     timestamp: float                          # epoch seconds
     pressure_hpa: float                       # sea-level pressure
     temperature_c: float
-    humidity_pct: Optional[float] = None      # 0-100
-    wind_speed_ms: Optional[float] = None
-    wind_direction_deg: Optional[float] = None
-    solar_radiation_wm2: Optional[float] = None
-    rain_rate_mmh: Optional[float] = None
+    humidity_pct: float | None = None      # 0-100
+    wind_speed_ms: float | None = None
+    wind_direction_deg: float | None = None
+    solar_radiation_wm2: float | None = None
+    rain_rate_mmh: float | None = None
 
 
 @dataclass
@@ -142,12 +140,12 @@ class StateEstimator:
             "wind_speed":  _KalmanChannel(q=0.1,   r=0.5),
         }
         self._state = SmoothedState()
-        self._prev_dd: Optional[float] = None
+        self._prev_dd: float | None = None
         self._wind_history: deque[tuple[float, float]] = deque(maxlen=60)
         # Circular (vector) smoothing of wind bearing
-        self._wind_dir_sin: Optional[float] = None
-        self._wind_dir_cos: Optional[float] = None
-        self._last_rain_ts: Optional[float] = None   # epoch of last rain_rate >= RAIN_LIGHT
+        self._wind_dir_sin: float | None = None
+        self._wind_dir_cos: float | None = None
+        self._last_rain_ts: float | None = None   # epoch of last rain_rate >= RAIN_LIGHT
         self._prev_cloud_state: str = "clear"         # "clear" | "partly" | "cloudy"
 
     # ------------------------------------------------------------------
@@ -488,7 +486,7 @@ class StateEstimator:
         hist: list[SensorReading],
         target_ts: float,
         tolerance_s: float = 1800.0,
-    ) -> Optional[SensorReading]:
+    ) -> SensorReading | None:
         """Nearest reading to ``target_ts`` via bisect on ascending timestamps.
 
         ``times`` must be sorted ascending and parallel to ``hist``.  Returns
@@ -497,7 +495,7 @@ class StateEstimator:
         if not times:
             return None
         idx = bisect.bisect_left(times, target_ts)
-        best: Optional[SensorReading] = None
+        best: SensorReading | None = None
         best_diff = float("inf")
         for i in (idx - 1, idx):
             if 0 <= i < len(times):

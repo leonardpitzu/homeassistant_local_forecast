@@ -1,7 +1,7 @@
 """Tests for local_forecast.bayesian_forecaster — Markov + Bayesian evidence."""
 
-import sys
 import os
+import sys
 
 sys.path.insert(
     0,
@@ -9,7 +9,6 @@ sys.path.insert(
 )
 
 from local_forecast.bayesian_forecaster import BayesianForecaster
-from local_forecast.state_estimator import SmoothedState
 from local_forecast.const import (
     FORECAST_HOURS,
     HA_CONDITIONS,
@@ -20,6 +19,7 @@ from local_forecast.const import (
     S_RAINY,
     S_SNOWY,
 )
+from local_forecast.state_estimator import SmoothedState
 
 
 def _smoothed(

@@ -11,8 +11,7 @@ No Home Assistant dependencies — pure Python + math.
 from __future__ import annotations
 
 import math
-from typing import Callable
-
+from collections.abc import Callable
 
 # ---------------------------------------------------------------------------
 #  Pressure Model — damped linear extrapolation

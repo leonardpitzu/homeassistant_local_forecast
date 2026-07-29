@@ -1,7 +1,7 @@
 """Tests for local_forecast.const — constant definitions and state mapping."""
 
-import sys
 import os
+import sys
 
 sys.path.insert(
     0,

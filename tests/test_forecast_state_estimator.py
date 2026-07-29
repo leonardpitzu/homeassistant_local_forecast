@@ -1,7 +1,7 @@
 """Tests for local_forecast.state_estimator — sensor fusion, trends, classification."""
 
-import sys
 import os
+import sys
 import time
 
 sys.path.insert(
@@ -9,10 +9,10 @@ sys.path.insert(
     os.path.join(os.path.dirname(__file__), "..", "custom_components"),
 )
 
-from local_forecast.state_estimator import SensorReading, SmoothedState, StateEstimator
 from local_forecast.const import (
     HA_CONDITIONS,
 )
+from local_forecast.state_estimator import SensorReading, SmoothedState, StateEstimator
 
 
 def _reading(

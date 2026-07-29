@@ -412,6 +412,6 @@ class _PressureHistoryExtraData(ExtraStoredData):
         return {"samples": self.samples}
 
     @classmethod
-    def from_dict(cls, data: dict) -> "_PressureHistoryExtraData":
+    def from_dict(cls, data: dict) -> _PressureHistoryExtraData:
         return cls(data.get("samples", []))
 

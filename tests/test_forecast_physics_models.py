@@ -1,7 +1,7 @@
 """Tests for local_forecast.physics_models — pressure, temperature, humidity models."""
 
-import sys
 import os
+import sys
 
 sys.path.insert(
     0,
@@ -14,7 +14,6 @@ from local_forecast.physics_models import (
     TemperatureModel,
     WindModel,
 )
-
 
 # =====================================================================
 #  PressureModel
@@ -69,17 +68,17 @@ class TestTemperatureModel:
     """Energy-balance + diurnal temperature model."""
 
     def _model(self, **kwargs):
-        defaults = dict(
-            current_temp=20.0,
-            dt_dt=0.0,
-            humidity=50.0,
-            wind_speed=3.0,
-            cloud_fraction=0.0,
-            sunrise_hour=6.0,
-            sunset_hour=20.0,
-            current_hour=12.0,
-            latitude=48.0,
-        )
+        defaults = {
+            "current_temp": 20.0,
+            "dt_dt": 0.0,
+            "humidity": 50.0,
+            "wind_speed": 3.0,
+            "cloud_fraction": 0.0,
+            "sunrise_hour": 6.0,
+            "sunset_hour": 20.0,
+            "current_hour": 12.0,
+            "latitude": 48.0,
+        }
         defaults.update(kwargs)
         return TemperatureModel(**defaults)
 
