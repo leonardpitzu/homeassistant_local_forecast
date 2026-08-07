@@ -2,9 +2,13 @@
 
 Serves a self-contained Leaflet page that tiles EUMETView's public WMS GetMap
 endpoint directly from the browser, so a dashboard can pan and zoom live
-satellite imagery without any polling, entities, or token. The viewer opens
-centred on the Home Assistant home location (read live, so moving home in HA
-settings recentres the map) and requests HiDPI tiles for a sharper image.
+satellite imagery without any polling, entities, or token. Leaflet itself is
+vendored into the integration, so the viewer works with no internet access to
+anything but the imagery server and pulls no third-party script.
+
+The endpoint is unauthenticated because an `iframe` card cannot present a
+token, so the map centre is snapped to a coarse grid: it frames the right
+region without publishing the home location to anyone who can reach the port.
 
 The view is registered only while at least one config entry has the map
 enabled; otherwise it responds 404, so when the user does not want it, it is
@@ -14,21 +18,33 @@ not there. Embed it with an `iframe` card pointing at ``/api/local_forecast/map`
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from aiohttp import web
-from homeassistant.components.http import HomeAssistantView
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import (
     DOMAIN,
+    MAP_CENTER_GRID,
     MAP_DEFAULT_ZOOM,
     MAP_FALLBACK_CENTER,
     MAP_LAYERS,
     MAP_MAX_ZOOM,
+    MAP_STATIC_URL,
     MAP_VIEW_URL,
     WMS_BASE_URL,
     WMS_VERSION,
 )
+
+LEAFLET_DIR = Path(__file__).parent / "leaflet"
+
+
+async def async_register_static_assets(hass: HomeAssistant) -> None:
+    """Expose the vendored Leaflet bundle."""
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(MAP_STATIC_URL, str(LEAFLET_DIR), True)]
+    )
 
 
 class LocalForecastMapView(HomeAssistantView):
@@ -46,16 +62,27 @@ class LocalForecastMapView(HomeAssistantView):
         """Return the viewer HTML, or 404 when the map is disabled."""
         if not self._hass.data.get(DOMAIN, {}).get("map_enabled"):
             return web.Response(status=404)
-        return web.Response(text=self._render(), content_type="text/html")
+        return web.Response(
+            text=self._render(),
+            content_type="text/html",
+            headers={
+                "X-Frame-Options": "SAMEORIGIN",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
 
     def _render(self) -> str:
-        """Build the self-contained Leaflet HTML for the current home location."""
+        """Build the self-contained Leaflet HTML for the current home region."""
         latitude = self._hass.config.latitude
         longitude = self._hass.config.longitude
         if latitude is None or longitude is None:
             center = list(MAP_FALLBACK_CENTER)
         else:
-            center = [latitude, longitude]
+            grid = MAP_CENTER_GRID
+            center = [
+                round(round(latitude / grid) * grid, 4),
+                round(round(longitude / grid) * grid, 4),
+            ]
         config = json.dumps(
             {
                 "base": WMS_BASE_URL,
@@ -64,9 +91,12 @@ class LocalForecastMapView(HomeAssistantView):
                 "center": center,
                 "zoom": MAP_DEFAULT_ZOOM,
                 "maxZoom": MAP_MAX_ZOOM,
+                "static": MAP_STATIC_URL,
             }
         )
-        return _HTML_TEMPLATE.replace("__CONFIG__", config)
+        return _HTML_TEMPLATE.replace("__CONFIG__", config).replace(
+            "__STATIC__", MAP_STATIC_URL
+        )
 
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
@@ -75,8 +105,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Local Weather Forecast</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="__STATIC__/leaflet.css" />
+<script src="__STATIC__/leaflet.js"></script>
 <style>
   html, body, #map { height: 100%; margin: 0; background: #000; }
 </style>
@@ -101,9 +131,6 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (i === 0) wms.addTo(map);
   });
   L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
-  L.circleMarker(cfg.center, {
-    radius: 6, color: '#fff', weight: 2, fillColor: '#1e88e5', fillOpacity: 0.9,
-  }).addTo(map);
 </script>
 </body>
 </html>

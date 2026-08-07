@@ -32,8 +32,10 @@ from .const import (
     S_SNOWY,
     S_SNOWY_RAINY,
     S_WINDY,
+    WET_BULB_MIX_UPPER,
+    WET_BULB_SNOW,
 )
-from .state_estimator import SmoothedState
+from .state_estimator import SmoothedState, wet_bulb_stull
 
 # ---------------------------------------------------------------------------
 #  Hourly forecast output
@@ -53,9 +55,6 @@ class HourForecast:
     wind_speed: float                # m/s
     wind_bearing: float              # degrees
     is_daytime: bool = True          # day/night flag for icon variants
-
-    # Full probability vector (for diagnostics / attributes)
-    state_probs: list[float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +244,9 @@ class BayesianForecaster:
             )
 
             # --- Step 4: Physical constraints (hard overrides) ---
-            prob = self._apply_constraints(prob, temp_h, is_night)
+            prob = self._apply_constraints(
+                prob, wet_bulb_stull(temp_h, hum_h), is_night
+            )
 
             # --- Step 5: Normalise ---
             prob = self._normalise(prob)
@@ -286,7 +287,6 @@ class BayesianForecaster:
                 wind_speed=round(wind_speed_h, 1),
                 wind_bearing=round(wind_bearing_h),
                 is_daytime=not is_night,
-                state_probs=[round(p, 3) for p in prob],
             ))
 
         return results
@@ -403,21 +403,23 @@ class BayesianForecaster:
         return [p * lk for p, lk in zip(prob, likelihood)]
 
     def _apply_constraints(
-        self, prob: list[float], temp: float, is_night: bool
+        self, prob: list[float], wet_bulb: float, is_night: bool
     ) -> list[float]:
         """Hard physical constraints — zero out impossible states.
 
-        These are not soft biases, they are physical laws:
-          - Cannot snow when wet-bulb > 4 °C (even generous margin)
-          - Cannot be "sunny" at night
-          - Cannot be "clear-night" during day
+        Precipitation type is decided by wet-bulb temperature, the same way
+        the current-state classifier decides it, and in both directions: no
+        snow in the warmth, no rain in the deep cold.
         """
         out = list(prob)
 
-        # --- Temperature: kill snow if way too warm ---
-        if temp > 6.0:
+        if wet_bulb > WET_BULB_MIX_UPPER + 5.0:
             out[S_SNOWY] = 0.0
             out[S_SNOWY_RAINY] = 0.0
+        elif wet_bulb < WET_BULB_SNOW:
+            out[S_RAINY] = 0.0
+            out[S_POURING] = 0.0
+            out[S_LIGHTNING_RAINY] = 0.0
 
         # --- Day/night swap ---
         if is_night:

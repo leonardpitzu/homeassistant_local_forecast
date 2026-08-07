@@ -4,6 +4,10 @@ from typing import Final
 
 DOMAIN: Final = "local_forecast"
 
+# Dispatcher signal the weather entity fires after every pipeline run so the
+# sensor entities can push their state instead of polling independently.
+SIGNAL_UPDATE: Final = "local_forecast_update_{}"
+
 # --- Config keys: required sensors ---
 CONF_PRESSURE_SENSOR: Final = "pressure_sensor"
 CONF_TEMPERATURE_SENSOR: Final = "temperature_sensor"
@@ -119,7 +123,11 @@ STORM_HUMIDITY: Final = 80.0       # %
 STORM_WIND: Final = 8.0            # m/s
 
 # --- History ring-buffer ---
-HISTORY_MAX_RECORDS: Final = 360
+# The trend code looks back in *time* (1 h for slopes, 3 h for curvature), so
+# the window is bounded by age; the record cap is only a memory backstop for
+# pathologically fast sensors.
+HISTORY_MAX_RECORDS: Final = 2000
+HISTORY_SECONDS: Final = 4 * 3600.0
 
 # --- Forecast horizon ---
 FORECAST_HOURS: Final = 12
@@ -136,8 +144,14 @@ FORECAST_HOURS: Final = 12
 WMS_BASE_URL: Final = "https://view.eumetsat.int/geoserver/ows"
 WMS_VERSION: Final = "1.3.0"  # WMS 1.3.0 + EPSG:4326 → lat,lon axis order.
 MAP_VIEW_URL: Final = "/api/local_forecast/map"
+MAP_STATIC_URL: Final = "/local_forecast_static"
 MAP_DEFAULT_ZOOM: Final = 6
 MAP_MAX_ZOOM: Final = 9
+
+# The viewer is reachable without authentication (an `iframe` card cannot
+# present a token), so the centre is snapped to this grid — enough to frame
+# the right region at zoom 6, not enough to locate a house.
+MAP_CENTER_GRID: Final = 0.25
 
 # Fallback centre when Home Assistant has no home location configured
 # (central Europe). Normally hass.config.latitude/longitude is used live.

@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Final
 
 from homeassistant.components.weather import (
@@ -24,16 +25,27 @@ from homeassistant.components.weather import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
     UnitOfPressure,
     UnitOfSpeed,
     UnitOfTemperature,
 )
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import (
+    PressureConverter,
+    SpeedConverter,
+    TemperatureConverter,
+)
 
 from .bayesian_forecaster import BayesianForecaster, HourForecast
 from .const import (
@@ -52,14 +64,24 @@ from .const import (
     FORECAST_HOURS,
     GRAVITY_EXPONENT,
     HA_CONDITIONS,
+    HISTORY_SECONDS,
     KELVIN_OFFSET,
     LAPSE_RATE,
     PRESSURE_RELATIVE,
+    SIGNAL_UPDATE,
 )
 from .physics_models import HumidityModel, PressureModel, TemperatureModel, WindModel
 from .state_estimator import SensorReading, StateEstimator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Unit handling is delegated to Home Assistant's own converters so every unit
+# HA knows about is accepted, not just the handful worth string-matching.
+_CONVERTERS: Final = {
+    CONF_PRESSURE_SENSOR: (PressureConverter, UnitOfPressure.HPA),
+    CONF_TEMPERATURE_SENSOR: (TemperatureConverter, UnitOfTemperature.CELSIUS),
+    CONF_WIND_SPEED_SENSOR: (SpeedConverter, UnitOfSpeed.METERS_PER_SECOND),
+}
 
 # Severity ranking used to pick the "worst" condition of a day for the daily
 # forecast card (higher = more severe, what a non-technical family cares about).
@@ -108,6 +130,7 @@ class LocalForecastWeather(WeatherEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_should_poll = False
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_pressure_unit = UnitOfPressure.HPA
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
@@ -139,8 +162,21 @@ class LocalForecastWeather(WeatherEntity):
         self._condition: str | None = None
         self._attrs: dict[str, Any] = {}
         self._forecast_ts: datetime | None = None
-        self._debounce_cancel: callback | None = None
-        self._min_interval: float = 30.0  # seconds between full recalculations
+        self._debounce_cancel: Any = None
+        self._pending_since: float | None = None
+        self._min_interval: float = 30.0   # debounce quiet period
+        self._max_wait: float = 120.0      # never postpone longer than this
+        self._has_data = False
+
+        # Sample timestamps must be monotonic — the history buffer is
+        # bisected on them — but also comparable to recorder timestamps, so
+        # anchor a monotonic clock onto the wall clock at startup.
+        self._clock_wall = time.time()
+        self._clock_mono = time.monotonic()
+
+    def _now_ts(self) -> float:
+        """Epoch-like timestamp immune to wall-clock steps (NTP, no RTC)."""
+        return self._clock_wall + (time.monotonic() - self._clock_mono)
 
     # ------------------------------------------------------------------
     #  Config helpers
@@ -148,6 +184,10 @@ class LocalForecastWeather(WeatherEntity):
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         return self._entry.options.get(key, self._entry.data.get(key, default))
+
+    def _has(self, key: str) -> bool:
+        """Whether an optional sensor is configured for this entry."""
+        return bool(self._cfg(key))
 
     def _sensor_ids(self) -> list[str]:
         """All configured sensor entity_ids (for state tracking)."""
@@ -167,6 +207,11 @@ class LocalForecastWeather(WeatherEntity):
         """Subscribe to sensor changes."""
         await super().async_added_to_hass()
 
+        try:
+            await self._async_backfill_history()
+        except Exception:  # never let a cold-start optimisation break setup
+            _LOGGER.debug("Recorder backfill failed", exc_info=True)
+
         ids = self._sensor_ids()
         if ids:
             self.async_on_remove(
@@ -174,12 +219,39 @@ class LocalForecastWeather(WeatherEntity):
                     self.hass, ids, self._on_sensor_change
                 )
             )
+        # Safety net: the entity does not poll, so guarantee the forecast is
+        # refreshed even while every source sensor sits perfectly still.
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self._on_interval, timedelta(minutes=5)
+            )
+        )
+        self.async_on_remove(self._cancel_debounce)
+
+    @callback
+    def _cancel_debounce(self) -> None:
+        if self._debounce_cancel:
+            self._debounce_cancel()
+            self._debounce_cancel = None
+
+    async def _on_interval(self, _now) -> None:
+        await self._async_recalculate()
 
     @callback
     def _on_sensor_change(self, event: Event) -> None:
-        """Handle sensor state change — debounced."""
-        if self._debounce_cancel:
-            self._debounce_cancel()
+        """Handle sensor state change — debounced with a hard ceiling.
+
+        A pure reset-on-event debounce starves forever when any source
+        sensor updates faster than the quiet period.
+        """
+        now = self._now_ts()
+        if self._pending_since is None:
+            self._pending_since = now
+        elif now - self._pending_since >= self._max_wait:
+            self._cancel_debounce()
+            self._debounce_fire(None)
+            return
+        self._cancel_debounce()
         self._debounce_cancel = async_call_later(
             self.hass, self._min_interval, self._debounce_fire
         )
@@ -188,43 +260,142 @@ class LocalForecastWeather(WeatherEntity):
     def _debounce_fire(self, _now) -> None:
         """Fire after debounce interval — all sensors are current."""
         self._debounce_cancel = None
-        self.hass.async_create_task(self._async_recalculate())
+        self._pending_since = None
+        self._entry.async_create_task(
+            self.hass, self._async_recalculate(), eager_start=False
+        )
 
     async def _async_recalculate(self) -> None:
         """Run the full pipeline and write state."""
         self._ingest_sensors()
         self._run_forecast()
         self.async_write_ha_state()
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self._entry.entry_id))
         await self.async_update_listeners(None)
 
     async def async_update(self) -> None:
-        """Periodic update (if HA polls us)."""
+        """Refresh on demand (initial add, or an explicit update request)."""
         self._ingest_sensors()
         self._run_forecast()
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self._entry.entry_id))
         await self.async_update_listeners(None)
+
+    async def _async_backfill_history(self) -> None:
+        """Seed the estimator from the recorder so trends are live at boot.
+
+        Pressure tendency is the single most important input; without this
+        it reads zero for the first hour after every restart.
+        """
+        if "recorder" not in self.hass.config.components:
+            return
+        pressure_id = self._cfg(CONF_PRESSURE_SENSOR)
+        temp_id = self._cfg(CONF_TEMPERATURE_SENSOR)
+        if not pressure_id or not temp_id:
+            return
+
+        from homeassistant.components.recorder import get_instance, history
+
+        ids = [pressure_id, temp_id]
+        humidity_id = self._cfg(CONF_HUMIDITY_SENSOR)
+        if humidity_id:
+            ids.append(humidity_id)
+
+        end = dt_util.utcnow()
+        start = end - timedelta(seconds=HISTORY_SECONDS)
+        try:
+            past = await get_instance(self.hass).async_add_executor_job(
+                partial(
+                    history.get_significant_states,
+                    self.hass,
+                    start,
+                    end,
+                    ids,
+                    include_start_time_state=True,
+                    significant_changes_only=False,
+                    no_attributes=True,
+                )
+            )
+        except Exception:  # recorder is best-effort; never block setup
+            _LOGGER.debug("Recorder backfill unavailable", exc_info=True)
+            return
+
+        series = {
+            key: self._series(past.get(sid, []), key)
+            for key, sid in (
+                (CONF_PRESSURE_SENSOR, pressure_id),
+                (CONF_TEMPERATURE_SENSOR, temp_id),
+                (CONF_HUMIDITY_SENSOR, humidity_id),
+            )
+            if sid
+        }
+        pressures = series.get(CONF_PRESSURE_SENSOR, [])
+        temps = series.get(CONF_TEMPERATURE_SENSOR, [])
+        if len(pressures) < 3 or not temps:
+            return
+
+        count = 0
+        for ts, value in pressures:
+            temp = self._latest_before(temps, ts)
+            if temp is None:
+                continue
+            reading = SensorReading(
+                timestamp=ts,
+                pressure_hpa=self._to_sea_level(value, temp),
+                temperature_c=temp,
+                humidity_pct=self._latest_before(
+                    series.get(CONF_HUMIDITY_SENSOR, []), ts
+                ),
+            )
+            self._estimator.update(reading)
+            count += 1
+        if count:
+            self._has_data = True
+            _LOGGER.debug("Backfilled %d historical readings", count)
+
+    def _series(self, states, config_key: str) -> list[tuple[float, float]]:
+        """Convert recorder states to (timestamp, value) in canonical units."""
+        live = self.hass.states.get(self._cfg(config_key) or "")
+        unit = live.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if live else None
+        out: list[tuple[float, float]] = []
+        for state in states:
+            value = self._parse(getattr(state, "state", None), unit, config_key)
+            if value is not None:
+                out.append((state.last_updated.timestamp(), value))
+        out.sort(key=lambda item: item[0])
+        return out
+
+    @staticmethod
+    def _latest_before(
+        series: list[tuple[float, float]], ts: float
+    ) -> float | None:
+        """Most recent value in ``series`` at or before ``ts``."""
+        best: float | None = None
+        for sample_ts, value in series:
+            if sample_ts > ts:
+                break
+            best = value
+        return best
 
     # ------------------------------------------------------------------
     #  Sensor ingestion
     # ------------------------------------------------------------------
 
-    def _ingest_sensors(self) -> None:
+    def _ingest_sensors(self) -> bool:
         """Read all configured sensors and feed a SensorReading."""
         pressure = self._read_float(CONF_PRESSURE_SENSOR)
         temperature = self._read_float(CONF_TEMPERATURE_SENSOR)
         if pressure is None or temperature is None:
-            return
+            return False
 
-        # QFE → QNH conversion if absolute pressure
-        if self._cfg(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE) != PRESSURE_RELATIVE:
-            elevation = self._cfg(CONF_ELEVATION, DEFAULT_ELEVATION)
-            if elevation is not None and elevation != 0:
-                temp_kelvin = max(200.0, temperature + KELVIN_OFFSET)
-                pressure = pressure * (
-                    1 - LAPSE_RATE * elevation / temp_kelvin
-                ) ** -GRAVITY_EXPONENT
+        pressure = self._to_sea_level(pressure, temperature)
+        # Validate the sea-level value, not the station value: above roughly
+        # 1250 m a perfectly healthy QFE reading is below 870 hPa.
+        if not 870.0 <= pressure <= 1090.0:
+            _LOGGER.debug("Rejecting sea-level pressure %.1f hPa", pressure)
+            return False
 
         reading = SensorReading(
-            timestamp=time.time(),
+            timestamp=self._now_ts(),
             pressure_hpa=pressure,
             temperature_c=temperature,
             humidity_pct=self._read_float(CONF_HUMIDITY_SENSOR),
@@ -234,6 +405,18 @@ class LocalForecastWeather(WeatherEntity):
             rain_rate_mmh=self._read_float(CONF_RAIN_RATE_SENSOR),
         )
         self._estimator.update(reading)
+        self._has_data = True
+        return True
+
+    def _to_sea_level(self, pressure: float, temperature: float) -> float:
+        """Convert station pressure (QFE) to sea level (QNH) when needed."""
+        if self._cfg(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE) == PRESSURE_RELATIVE:
+            return pressure
+        elevation = self._cfg(CONF_ELEVATION, DEFAULT_ELEVATION)
+        if not elevation:
+            return pressure
+        temp_kelvin = max(200.0, temperature + KELVIN_OFFSET)
+        return pressure * (1 - LAPSE_RATE * elevation / temp_kelvin) ** -GRAVITY_EXPONENT
 
     def _read_float(self, config_key: str) -> float | None:
         sid = self._cfg(config_key)
@@ -242,35 +425,31 @@ class LocalForecastWeather(WeatherEntity):
         state = self.hass.states.get(sid)
         if state is None or state.state in ("unknown", "unavailable", ""):
             return None
+        return self._parse(
+            state.state, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT), config_key
+        )
+
+    @staticmethod
+    def _parse(raw: Any, unit: str | None, config_key: str) -> float | None:
+        """Parse a state string into a validated value in canonical units."""
         try:
-            val = float(state.state)
+            val = float(raw)
         except (ValueError, TypeError):
             return None
 
-        # Auto-convert common units
-        unit = (state.attributes.get("unit_of_measurement") or "").lower()
-        if config_key == CONF_PRESSURE_SENSOR:
-            if "inhg" in unit:
-                val *= 33.8639
-            elif "mmhg" in unit:
-                val *= 1.33322
-            elif "kpa" in unit:
-                val *= 10.0
-            elif "psi" in unit:
-                val *= 68.9476
-        elif config_key == CONF_TEMPERATURE_SENSOR:
-            if "°f" in unit or "fahrenheit" in unit.lower():
-                val = (val - 32) * 5 / 9
-        elif config_key == CONF_WIND_SPEED_SENSOR:
-            if "km/h" in unit or "kph" in unit:
-                val /= 3.6
-            elif "mph" in unit:
-                val *= 0.44704
-            elif "kn" in unit or "knot" in unit:
-                val *= 0.51444
+        converter = _CONVERTERS.get(config_key)
+        if converter is not None and unit:
+            cls, target = converter
+            if unit != target and unit in cls.VALID_UNITS:
+                try:
+                    val = cls.convert(val, unit, target)
+                except (ValueError, TypeError):
+                    return None
 
-        # Reject physically impossible values after conversion
-        if config_key == CONF_PRESSURE_SENSOR and not (870.0 <= val <= 1090.0):
+        # Reject physically impossible values after conversion.  The pressure
+        # bound is deliberately wide here: this is station pressure, which is
+        # only checked against the sea-level window after reduction.
+        if config_key == CONF_PRESSURE_SENSOR and not (300.0 <= val <= 1100.0):
             return None
         if config_key == CONF_TEMPERATURE_SENSOR and not (-60.0 <= val <= 60.0):
             return None
@@ -287,14 +466,25 @@ class LocalForecastWeather(WeatherEntity):
 
     def _run_forecast(self) -> None:
         """Classify current state, build physics models, run Bayesian forecast."""
+        if not self._has_data:
+            return
         s = self._estimator.state
+        s.has_humidity = self._has(CONF_HUMIDITY_SENSOR)
+        s.has_wind = self._has(CONF_WIND_SPEED_SENSOR)
 
         # Day/night from sun entity
         sunrise_h, sunset_h = self._sun_hours()
         sun_el = self._sun_elevation()
         now_local = dt_util.now()
         now_h = now_local.hour + now_local.minute / 60.0
-        s.is_night = not (sunrise_h <= now_h < sunset_h)
+        sun = self.hass.states.get("sun.sun")
+        # sun.sun already answers this correctly at every latitude and across
+        # midnight; re-deriving it from decimal hours does not.
+        s.is_night = (
+            sun.state == "below_horizon"
+            if sun is not None
+            else not (sunrise_h <= now_h < sunset_h)
+        )
 
         # Cloud fraction: computed once and reused for both the classifier
         # (section 7 hysteresis) and the temperature model below.
@@ -360,11 +550,15 @@ class LocalForecastWeather(WeatherEntity):
         # sensor) and hourly sea-level-pressure sample for the pressure ring
         # buffer that feeds the tendency / synoptic / barometer sensors.
         self._forecast_ts = now_local
-        buffer = self.hass.data[DOMAIN][self._entry.entry_id].get(
-            "pressure_history"
-        )
+        entry_data = self.hass.data[DOMAIN][self._entry.entry_id]
+        buffer = entry_data.get("pressure_history")
         if buffer is not None and 870.0 <= s.pressure <= 1090.0:
+            # Wall clock on purpose: this buffer is persisted across restarts.
+            before = len(buffer.dump())
             buffer.record(time.time(), s.pressure)
+            store = entry_data.get("pressure_store")
+            if store is not None and len(buffer.dump()) != before:
+                store.async_delay_save(lambda: {"samples": buffer.dump()}, 60)
 
     def _sun_elevation(self) -> float:
         """Return current sun elevation in degrees from sun.sun entity."""
@@ -406,6 +600,11 @@ class LocalForecastWeather(WeatherEntity):
     # ------------------------------------------------------------------
 
     @property
+    def available(self) -> bool:
+        """Only claim a state once real sensor data has been ingested."""
+        return self._has_data
+
+    @property
     def condition(self) -> str | None:
         return self._condition
 
@@ -415,6 +614,8 @@ class LocalForecastWeather(WeatherEntity):
 
     @property
     def humidity(self) -> float | None:
+        if not self._has(CONF_HUMIDITY_SENSOR):
+            return None
         return round(self._estimator.state.humidity)
 
     @property
@@ -423,10 +624,14 @@ class LocalForecastWeather(WeatherEntity):
 
     @property
     def native_wind_speed(self) -> float | None:
+        if not self._has(CONF_WIND_SPEED_SENSOR):
+            return None
         return round(self._estimator.state.wind_speed, 1)
 
     @property
     def wind_bearing(self) -> float | None:
+        if not self._has(CONF_WIND_DIRECTION_SENSOR):
+            return None
         return round((self._estimator.state.wind_direction + 360) % 360)
 
     @property
@@ -436,7 +641,7 @@ class LocalForecastWeather(WeatherEntity):
         T, W, RH = s.temperature, s.wind_speed, s.humidity
         # Wind chill (Environment Canada formula, T < 10 °C, W > 4.8 km/h)
         W_kmh = W * 3.6
-        if T <= 10.0 and W_kmh > 4.8:
+        if self._has(CONF_WIND_SPEED_SENSOR) and T <= 10.0 and W_kmh > 4.8:
             wc = (
                 13.12 + 0.6215 * T
                 - 11.37 * W_kmh ** 0.16
@@ -444,7 +649,7 @@ class LocalForecastWeather(WeatherEntity):
             )
             return round(wc, 1)
         # Heat index (Steadman, T > 27 °C)
-        if T >= 27.0 and RH >= 40:
+        if self._has(CONF_HUMIDITY_SENSOR) and T >= 27.0 and RH >= 40:
             hi = (
                 -8.785 + 1.611 * T + 2.339 * RH
                 - 0.1461 * T * RH - 0.01231 * T * T
@@ -456,6 +661,8 @@ class LocalForecastWeather(WeatherEntity):
 
     @property
     def native_dew_point(self) -> float | None:
+        if not self._has(CONF_HUMIDITY_SENSOR):
+            return None
         return self._estimator.state.dew_point
 
     # ------------------------------------------------------------------
@@ -490,19 +697,23 @@ class LocalForecastWeather(WeatherEntity):
 
     def _build_attributes(self) -> dict[str, Any]:
         s = self._estimator.state
-        force = self._beaufort(s.wind_speed)
         attrs: dict[str, Any] = {
             "pressure_trend": round(s.dp_dt, 2),
             "pressure_acceleration": round(s.d2p_dt2, 2),
-            "dew_point": s.dew_point,
-            "dew_depression": s.dew_depression,
-            "wet_bulb": s.wet_bulb,
-            "wind_force": force,
-            "wind_force_description": self._BEAUFORT_NAMES[force],
             "front_warm": s.front_warm,
             "front_cold": s.front_cold,
             "front_occluded": s.front_occluded,
         }
+        # Moisture is derived from relative humidity; without that sensor the
+        # numbers would be pure fiction, so publish nothing instead.
+        if self._has(CONF_HUMIDITY_SENSOR):
+            attrs["dew_point"] = s.dew_point
+            attrs["dew_depression"] = s.dew_depression
+            attrs["wet_bulb"] = s.wet_bulb
+        if self._has(CONF_WIND_SPEED_SENSOR):
+            force = self._beaufort(s.wind_speed)
+            attrs["wind_force"] = force
+            attrs["wind_force_description"] = self._BEAUFORT_NAMES[force]
         if self._hourly:
             h1 = self._hourly[0]
             attrs["next_hour_condition"] = h1.condition
@@ -526,7 +737,9 @@ class LocalForecastWeather(WeatherEntity):
         if not self._hourly:
             return None
 
-        now = dt_util.now()
+        # Anchor on when the forecast was computed, not when a card happens to
+        # ask, or every entry drifts by up to one refresh interval.
+        now = self._forecast_ts or dt_util.now()
         result: list[Forecast] = []
         for hf in self._hourly:
             ft = now + timedelta(hours=hf.hours_ahead)
@@ -560,7 +773,7 @@ class LocalForecastWeather(WeatherEntity):
         """
         if not self._hourly:
             return []
-        now = dt_util.now()
+        now = self._forecast_ts or dt_util.now()
         out: list[dict[str, Any]] = []
         for hf in self._hourly:
             ft = now + timedelta(hours=hf.hours_ahead)
@@ -589,7 +802,7 @@ class LocalForecastWeather(WeatherEntity):
         if not self._hourly:
             return None
 
-        now = dt_util.now()
+        now = self._forecast_ts or dt_util.now()
         hours_left_today = 24 - now.hour
         today_hours = [h for h in self._hourly if h.hours_ahead <= hours_left_today]
         tomorrow_hours = [h for h in self._hourly if h.hours_ahead > hours_left_today]

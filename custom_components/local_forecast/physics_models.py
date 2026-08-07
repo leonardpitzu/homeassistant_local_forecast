@@ -107,7 +107,7 @@ class TemperatureModel:
         # Peak temperature lags solar noon by ~2 h
         self.t_max = self.solar_noon + 2.0
         # Minimum ~30 min before sunrise
-        self.t_min = sunrise_hour - 0.5
+        self.t_min = (sunrise_hour - 0.5) % 24.0
 
     def __call__(self, hours_ahead: int) -> float:
         h_target = (self.hour0 + hours_ahead) % 24.0
@@ -179,18 +179,7 @@ class TemperatureModel:
 
 
 # ---------------------------------------------------------------------------
-#  Humidity Model — Clausius-Clapeyron conservation of mixing ratio
-#
-#  Assumes absolute humidity (mixing ratio) is approximately conserved
-#  over the forecast period.  As temperature changes, RH adjusts:
-#
-#      RH₂ = RH₁ · es(T₁) / es(T₂)
-#
-#  where es(T) = 6.112 · exp(17.67·T / (T + 243.5))  (Magnus formula)
-#
-#  This is *exact* physics for adiabatic processes (no moisture added
-#  or removed).  Precipitation removes moisture; the Bayesian layer
-#  handles that probabilistically.
+#  Wind Model — persistence + regression to the climatological mean
 # ---------------------------------------------------------------------------
 
 class WindModel:
@@ -243,6 +232,21 @@ class WindModel:
         veer_rate = 3.0 * min(1.0, predicted_speed / 8.0)
         return self.bearing0 + veer_rate * h
 
+
+# ---------------------------------------------------------------------------
+#  Humidity Model — Clausius-Clapeyron conservation of mixing ratio
+#
+#  Assumes absolute humidity (mixing ratio) is approximately conserved
+#  over the forecast period.  As temperature changes, RH adjusts:
+#
+#      RH₂ = RH₁ · es(T₁) / es(T₂)
+#
+#  where es(T) = 6.112 · exp(17.67·T / (T + 243.5))  (Magnus formula)
+#
+#  This is *exact* physics for adiabatic processes (no moisture added
+#  or removed).  Precipitation removes moisture; the Bayesian layer
+#  handles that probabilistically.
+# ---------------------------------------------------------------------------
 
 class HumidityModel:
     """Predict RH from temperature change via Clausius-Clapeyron."""

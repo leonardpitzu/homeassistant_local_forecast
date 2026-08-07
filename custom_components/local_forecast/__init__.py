@@ -7,14 +7,16 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .const import CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP, DOMAIN
-from .map import LocalForecastMapView
+from .map import LocalForecastMapView, async_register_static_assets
 from .pressure_history import PressureHistory
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
+STORAGE_VERSION = 1
 
 
 def _map_enabled(entry: ConfigEntry) -> bool:
@@ -26,13 +28,19 @@ def _map_enabled(entry: ConfigEntry) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Local Weather Forecast from a config entry."""
+    # Shared hourly sea-level-pressure buffer feeding the tendency, synoptic
+    # and barometer sensors.  It is persisted by the integration itself so it
+    # survives a restart even if the user disables one of those sensors.
+    store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.pressure")
+    pressure_history = PressureHistory()
+    if (saved := await store.async_load()) and isinstance(saved, dict):
+        pressure_history.load(saved.get("samples", []))
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "config": entry.data,
-        # Shared hourly sea-level-pressure buffer feeding the tendency,
-        # synoptic-mean and barometer sensors.  The weather entity records
-        # into it; the pressure-tendency sensor persists it across restarts.
-        "pressure_history": PressureHistory(),
+        "pressure_history": pressure_history,
+        "pressure_store": store,
     }
 
     # Optional satellite map: serve the pan/zoom view only while at least one
@@ -45,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if hass.data[DOMAIN]["map_enabled"] and not hass.data[DOMAIN].get(
         "map_view_registered"
     ):
+        await async_register_static_assets(hass)
         hass.http.register_view(LocalForecastMapView(hass))
         hass.data[DOMAIN]["map_view_registered"] = True
 

@@ -19,6 +19,7 @@ from .const import (
     FOG_DEW_DEPRESSION,
     FOG_MAX_WIND,
     HISTORY_MAX_RECORDS,
+    HISTORY_SECONDS,
     RAIN_HEAVY,
     RAIN_LIGHT,
     S_CLEAR,
@@ -88,6 +89,12 @@ class SmoothedState:
     front_cold: bool = False
     front_occluded: bool = False
 
+    # Which optional channels are backed by a real sensor.  Humidity and wind
+    # default to sensible numbers, and classifying off those defaults invents
+    # fog and calm that were never measured.
+    has_humidity: bool = True
+    has_wind: bool = True
+
     # Day/night (set by the HA layer before calling classify)
     is_night: bool = False
 
@@ -128,11 +135,41 @@ POST_RAIN_CLOUD_FLOOR: float = 0.40
 WIND_DIR_SMOOTH_ALPHA: float = 0.3
 
 
+def dew_point_magnus(temperature_c: float, humidity_pct: float) -> float:
+    """Dew point in °C from temperature and relative humidity (Magnus)."""
+    rh = max(1.0, min(100.0, humidity_pct))
+    a, b = 17.27, 237.7
+    alpha = (a * temperature_c) / (b + temperature_c) + math.log(rh / 100.0)
+    if abs(a - alpha) < 1e-8:
+        return temperature_c  # saturated air
+    return (b * alpha) / (a - alpha)
+
+
+def wet_bulb_stull(temperature_c: float, humidity_pct: float) -> float:
+    """Wet-bulb temperature in °C (Stull 2011, ±0.3 °C for normal ranges)."""
+    t = temperature_c
+    rh = max(1.0, min(100.0, humidity_pct))
+    raw = (
+        t * math.atan(0.151977 * math.sqrt(rh + 8.313659))
+        + math.atan(t + rh)
+        - math.atan(rh - 1.676331)
+        + 0.00391838 * (rh ** 1.5) * math.atan(0.023101 * rh)
+        - 4.686035
+    )
+    return max(dew_point_magnus(t, rh), min(t, raw))
+
+
 class StateEstimator:
     """Fuses sensor readings into a clean state with trends and frontal flags."""
 
-    def __init__(self, *, history_size: int = HISTORY_MAX_RECORDS) -> None:
+    def __init__(
+        self,
+        *,
+        history_size: int = HISTORY_MAX_RECORDS,
+        history_seconds: float = HISTORY_SECONDS,
+    ) -> None:
         self._history: deque[SensorReading] = deque(maxlen=history_size)
+        self._history_seconds = history_seconds
         self._kf: dict[str, _KalmanChannel] = {
             "pressure":    _KalmanChannel(q=0.005, r=0.15),
             "temperature": _KalmanChannel(q=0.02,  r=0.3),
@@ -155,6 +192,9 @@ class StateEstimator:
     def update(self, reading: SensorReading) -> SmoothedState:
         """Ingest one reading, return updated smoothed state."""
         self._history.append(reading)
+        cutoff = reading.timestamp - self._history_seconds
+        while len(self._history) > 1 and self._history[0].timestamp < cutoff:
+            self._history.popleft()
 
         # --- Kalman update per channel ---
         self._state.pressure = self._kalman("pressure", reading.pressure_hpa)
@@ -243,7 +283,11 @@ class StateEstimator:
             return S_LIGHTNING_RAINY
 
         # --- 4: Fog ---
-        if s.dew_depression < FOG_DEW_DEPRESSION and s.wind_speed < FOG_MAX_WIND:
+        if (
+            s.has_humidity
+            and s.dew_depression < FOG_DEW_DEPRESSION
+            and s.wind_speed < FOG_MAX_WIND
+        ):
             return S_FOG
 
         # --- 5: Exceptional (bomb cyclone: pressure drop > 24 hPa / 24h) ---
@@ -251,7 +295,7 @@ class StateEstimator:
             return S_EXCEPTIONAL
 
         # --- 6: Strong wind (only if no precipitation) ---
-        if s.wind_speed >= WIND_STRONG:
+        if s.has_wind and s.wind_speed >= WIND_STRONG:
             return S_WINDY
 
         # --- 7 & 8: Cloud cover + day/night (with hysteresis) ---
@@ -385,59 +429,69 @@ class StateEstimator:
         now = hist[-1]
         t_now = now.timestamp
 
-        ref = self._nearest_sorted(times, hist, t_now - 3600)  # ~1 h ago
-        if ref is None and len(hist) >= 3:
-            # Startup fallback: use oldest available reading so trends
-            # are not stuck at zero for the first hour after restart.
-            ref = hist[0]
-        if ref is not None:
-            dt_h = max(0.1, (t_now - ref.timestamp) / 3600)
-            # Use raw readings for both endpoints to avoid Kalman
-            # warm-up artefacts (filter starts at x=0).
-            self._state.dp_dt = (now.pressure_hpa - ref.pressure_hpa) / dt_h
-            self._state.dt_dt = (now.temperature_c - ref.temperature_c) / dt_h
-            if ref.humidity_pct is not None and now.humidity_pct is not None:
-                self._state.dh_dt = (now.humidity_pct - ref.humidity_pct) / dt_h
+        # Slopes over the last hour by least squares: a two-point endpoint
+        # difference throws away every sample in between and carries the full
+        # sensor noise, while the regression cuts it by ~sqrt(N).
+        window_start = t_now - 3600.0
+        idx = bisect.bisect_left(times, window_start)
+        if len(hist) - idx < 3:
+            idx = 0  # startup: use whatever history exists rather than nothing
+        window = hist[idx:]
+        if len(window) >= 2 and (t_now - window[0].timestamp) >= 300.0:
+            w_times = [(r.timestamp - t_now) / 3600.0 for r in window]
+            self._state.dp_dt = self._slope(
+                w_times, [r.pressure_hpa for r in window]
+            )
+            self._state.dt_dt = self._slope(
+                w_times, [r.temperature_c for r in window]
+            )
+            hum = [
+                (t, r.humidity_pct)
+                for t, r in zip(w_times, window)
+                if r.humidity_pct is not None
+            ]
+            if len(hum) >= 2:
+                self._state.dh_dt = self._slope(
+                    [t for t, _ in hum], [h for _, h in hum]
+                )
 
-        # Pressure acceleration: central second difference over a 3-h span.
-        #   d²P/dt² ≈ (P(t) − 2·P(t−Δ) + P(t−2Δ)) / Δ²   with Δ ≈ 1.5 h
-        # Properly expressed in hPa/h² (the previous version differenced two
-        # consecutive readings seconds apart, which was effectively zero).
+        # Pressure acceleration over a ~3 h span, from the *actual* sample
+        # spacing.  The samples the buffer returns are only approximately at
+        # the requested offsets, so a fixed Δ² divisor mis-scales the result.
+        #   d²P/dt² ≈ 2·(s₂ − s₁) / (t₂ − t₀)   with sᵢ the two secant slopes
         ref_mid = self._nearest_sorted(times, hist, t_now - 5400)    # ~1.5 h ago
         ref_old = self._nearest_sorted(times, hist, t_now - 10800)   # ~3 h ago
+        self._state.d2p_dt2 = 0.0
         if ref_mid is not None and ref_old is not None:
-            delta_h = 1.5
-            self._state.d2p_dt2 = (
-                now.pressure_hpa
-                - 2.0 * ref_mid.pressure_hpa
-                + ref_old.pressure_hpa
-            ) / (delta_h ** 2)
+            t0 = (ref_old.timestamp - t_now) / 3600.0
+            t1 = (ref_mid.timestamp - t_now) / 3600.0
+            span_recent, span_old = -t1, t1 - t0
+            if span_recent > 0.1 and span_old > 0.1:
+                s_recent = (now.pressure_hpa - ref_mid.pressure_hpa) / span_recent
+                s_old = (ref_mid.pressure_hpa - ref_old.pressure_hpa) / span_old
+                self._state.d2p_dt2 = 2.0 * (s_recent - s_old) / (-t0)
+
+    @staticmethod
+    def _slope(times_h: list[float], values: list[float]) -> float:
+        """Least-squares slope of ``values`` against ``times_h`` (per hour)."""
+        n = len(times_h)
+        mean_t = sum(times_h) / n
+        mean_v = sum(values) / n
+        denom = sum((t - mean_t) ** 2 for t in times_h)
+        if denom <= 1e-12:
+            return 0.0
+        num = sum((t - mean_t) * (v - mean_v) for t, v in zip(times_h, values))
+        return num / denom
 
     def _compute_moisture(self) -> None:
         """Dew point (Magnus), wet-bulb (Stull 2011), depression trend."""
         T = self._state.temperature
         RH = max(1.0, min(100.0, self._state.humidity))
 
-        # --- Dew point (Magnus) ---
-        a, b = 17.27, 237.7
-        alpha = (a * T) / (b + T) + math.log(RH / 100.0)
-        if abs(a - alpha) < 1e-8:
-            Td = T  # Saturated air
-        else:
-            Td = (b * alpha) / (a - alpha)
-
+        Td = dew_point_magnus(T, RH)
         self._state.dew_point = round(Td, 1)
         self._state.dew_depression = round(T - Td, 1)
-
-        # --- Wet-bulb (Stull 2011, ±0.3 °C for normal meteo range) ---
-        wb_raw = (
-            T * math.atan(0.151977 * math.sqrt(RH + 8.313659))
-            + math.atan(T + RH)
-            - math.atan(RH - 1.676331)
-            + 0.00391838 * (RH ** 1.5) * math.atan(0.023101 * RH)
-            - 4.686035
-        )
-        self._state.wet_bulb = round(max(Td, min(T, wb_raw)), 1)
+        self._state.wet_bulb = round(wet_bulb_stull(T, RH), 1)
 
         # --- Depression trend (°C/h) ---
         if self._prev_dd is not None and len(self._history) >= 2:
@@ -550,4 +604,8 @@ class StateEstimator:
 
         if solar_cloud is not None:
             return max(0.0, min(1.0, 0.6 * solar_cloud + 0.4 * dd_cloud))
+        if not self._state.has_humidity:
+            # No solar, no humidity: nothing observed says anything about the
+            # sky.  Sit in the middle rather than assert a default-driven one.
+            return 0.3
         return max(0.0, min(1.0, dd_cloud))

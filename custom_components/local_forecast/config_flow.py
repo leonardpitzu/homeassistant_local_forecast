@@ -35,9 +35,6 @@ _LOGGER = logging.getLogger(__name__)
 SENSOR_SELECTOR = selector.EntitySelector(
     selector.EntitySelectorConfig(domain="sensor")
 )
-OPTIONAL_SENSOR_SELECTOR = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain="sensor")
-)
 
 
 class LocalForecastConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -79,11 +76,11 @@ class LocalForecastConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_PRESSURE_SENSOR): SENSOR_SELECTOR,
                 vol.Required(CONF_TEMPERATURE_SENSOR): SENSOR_SELECTOR,
-                vol.Optional(CONF_HUMIDITY_SENSOR): OPTIONAL_SENSOR_SELECTOR,
-                vol.Optional(CONF_WIND_SPEED_SENSOR): OPTIONAL_SENSOR_SELECTOR,
-                vol.Optional(CONF_WIND_DIRECTION_SENSOR): OPTIONAL_SENSOR_SELECTOR,
-                vol.Optional(CONF_SOLAR_RADIATION_SENSOR): OPTIONAL_SENSOR_SELECTOR,
-                vol.Optional(CONF_RAIN_RATE_SENSOR): OPTIONAL_SENSOR_SELECTOR,
+                vol.Optional(CONF_HUMIDITY_SENSOR): SENSOR_SELECTOR,
+                vol.Optional(CONF_WIND_SPEED_SENSOR): SENSOR_SELECTOR,
+                vol.Optional(CONF_WIND_DIRECTION_SENSOR): SENSOR_SELECTOR,
+                vol.Optional(CONF_SOLAR_RADIATION_SENSOR): SENSOR_SELECTOR,
+                vol.Optional(CONF_RAIN_RATE_SENSOR): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_ELEVATION, default=DEFAULT_ELEVATION
                 ): vol.Coerce(int),
@@ -165,23 +162,23 @@ class LocalForecastOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_HUMIDITY_SENSOR,
                     description={"suggested_value": data.get(CONF_HUMIDITY_SENSOR)},
-                ): OPTIONAL_SENSOR_SELECTOR,
+                ): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_WIND_SPEED_SENSOR,
                     description={"suggested_value": data.get(CONF_WIND_SPEED_SENSOR)},
-                ): OPTIONAL_SENSOR_SELECTOR,
+                ): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_WIND_DIRECTION_SENSOR,
                     description={"suggested_value": data.get(CONF_WIND_DIRECTION_SENSOR)},
-                ): OPTIONAL_SENSOR_SELECTOR,
+                ): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_SOLAR_RADIATION_SENSOR,
                     description={"suggested_value": data.get(CONF_SOLAR_RADIATION_SENSOR)},
-                ): OPTIONAL_SENSOR_SELECTOR,
+                ): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_RAIN_RATE_SENSOR,
                     description={"suggested_value": data.get(CONF_RAIN_RATE_SENSOR)},
-                ): OPTIONAL_SENSOR_SELECTOR,
+                ): SENSOR_SELECTOR,
                 vol.Optional(
                     CONF_ELEVATION,
                     default=data.get(CONF_ELEVATION, DEFAULT_ELEVATION),

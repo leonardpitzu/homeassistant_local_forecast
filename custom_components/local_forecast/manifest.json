@@ -5,8 +5,8 @@
   "config_flow": true,
   "dependencies": ["http"],
   "documentation": "https://github.com/leonardpitzu/homeassistant_local_forecast",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/leonardpitzu/homeassistant_local_forecast/issues",
   "requirements": [],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

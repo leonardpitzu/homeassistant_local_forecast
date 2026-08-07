@@ -7,7 +7,6 @@ have their own history, can be graphed in tile cards, and used in badges.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from datetime import datetime
 
 from homeassistant.components.sensor import (
@@ -18,10 +17,9 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPressure
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
-from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
 from .classifiers import (
     BAROMETER_OPTIONS,
@@ -31,7 +29,7 @@ from .classifiers import (
     front_state,
     tendency_direction,
 )
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_UPDATE
 from .pressure_history import PressureHistory
 
 # HA condition string → human-readable label
@@ -126,8 +124,7 @@ async def async_setup_entry(
             ),
             HourlyForecastSensor(entry, weather_entity, device_info),
             FrontSensor(entry, weather_entity, device_info),
-        ],
-        True,
+        ]
     )
 
 
@@ -135,6 +132,7 @@ class _ForecastSensorBase(SensorEntity):
     """Base class for forecast sensors that read from the weather entity."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -142,24 +140,28 @@ class _ForecastSensorBase(SensorEntity):
         weather_entity,
         device_info: DeviceInfo,
     ) -> None:
+        self._entry_id = entry.entry_id
         self._weather = weather_entity
         self._attr_device_info = device_info
 
+    @property
+    def available(self) -> bool:
+        return self._weather.available
+
     async def async_added_to_hass(self) -> None:
-        """Update when the parent weather entity updates."""
+        """Update when the weather entity finishes a pipeline run."""
         await super().async_added_to_hass()
-        weather_id = self._weather.entity_id
-        if weather_id:
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.hass, [weather_id], self._on_weather_update
-                )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_UPDATE.format(self._entry_id),
+                self._handle_update,
             )
+        )
 
     @callback
-    def _on_weather_update(self, _event) -> None:
-        """Re-read value when the weather entity state changes."""
-        self.async_schedule_update_ha_state(True)
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
 
 
 class PrecipProbability6hSensor(_ForecastSensorBase):
@@ -252,13 +254,8 @@ class SeaLevelPressureSensor(_ForecastSensorBase):
         return self._weather.native_pressure
 
 
-class PressureTendencySensor(_ForecastSensorBase, RestoreEntity):
-    """WMO 3-hour pressure tendency (hPa/h).
-
-    Owns persistence of the shared hourly pressure buffer so both this
-    sensor and the synoptic mean survive a restart instead of warming up
-    for three hours.
-    """
+class PressureTendencySensor(_ForecastSensorBase):
+    """WMO 3-hour pressure tendency (hPa/h)."""
 
     _attr_name = "Pressure tendency"
     _attr_native_unit_of_measurement = "hPa/h"
@@ -272,17 +269,6 @@ class PressureTendencySensor(_ForecastSensorBase, RestoreEntity):
         super().__init__(entry, weather_entity, device_info)
         self._history = history
         self._attr_unique_id = f"{entry.entry_id}_pressure_tendency"
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last = await self.async_get_last_extra_data()
-        if last is not None:
-            restored = _PressureHistoryExtraData.from_dict(last.as_dict())
-            self._history.load(restored.samples)
-
-    @property
-    def extra_restore_state_data(self) -> ExtraStoredData:
-        return _PressureHistoryExtraData(self._history.dump())
 
     @property
     def native_value(self) -> float | None:
@@ -400,18 +386,4 @@ class FrontSensor(_ForecastSensorBase):
             attrs.get("front_cold"),
             attrs.get("front_occluded"),
         )
-
-
-@dataclass
-class _PressureHistoryExtraData(ExtraStoredData):
-    """Persisted hourly pressure samples for RestoreEntity."""
-
-    samples: list
-
-    def as_dict(self) -> dict:
-        return {"samples": self.samples}
-
-    @classmethod
-    def from_dict(cls, data: dict) -> _PressureHistoryExtraData:
-        return cls(data.get("samples", []))
 
