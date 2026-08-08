@@ -32,10 +32,13 @@ from .const import (
     MAP_LAYERS,
     MAP_MAX_ZOOM,
     MAP_STATIC_URL,
+    MAP_TIME_REFRESH_MS,
+    MAP_TIMES_URL,
     MAP_VIEW_URL,
     WMS_BASE_URL,
     WMS_VERSION,
 )
+from .wms_time import async_get_frame_times, cached_frame_times
 
 LEAFLET_DIR = Path(__file__).parent / "leaflet"
 
@@ -63,15 +66,18 @@ class LocalForecastMapView(HomeAssistantView):
         if not self._hass.data.get(DOMAIN, {}).get("map_enabled"):
             return web.Response(status=404)
         return web.Response(
-            text=self._render(),
+            text=self._render(cached_frame_times(self._hass)),
             content_type="text/html",
             headers={
                 "X-Frame-Options": "SAMEORIGIN",
                 "Referrer-Policy": "no-referrer",
+                # Safari restores an iframe from its back-forward cache without
+                # re-running the page, which is one way a stale frame sticks.
+                "Cache-Control": "no-store",
             },
         )
 
-    def _render(self) -> str:
+    def _render(self, times: dict[str, str]) -> str:
         """Build the self-contained Leaflet HTML for the current home region."""
         latitude = self._hass.config.latitude
         longitude = self._hass.config.longitude
@@ -92,10 +98,38 @@ class LocalForecastMapView(HomeAssistantView):
                 "zoom": MAP_DEFAULT_ZOOM,
                 "maxZoom": MAP_MAX_ZOOM,
                 "static": MAP_STATIC_URL,
+                "times": times,
+                "timesUrl": MAP_TIMES_URL,
+                "refreshMs": MAP_TIME_REFRESH_MS,
             }
         )
         return _HTML_TEMPLATE.replace("__CONFIG__", config).replace(
             "__STATIC__", MAP_STATIC_URL
+        )
+
+
+class LocalForecastMapTimesView(HomeAssistantView):
+    """Report the newest satellite frame available for each layer.
+
+    Shares the viewer's auth posture because it exists to serve that page; it
+    carries nothing but public EUMETSAT frame timestamps.
+    """
+
+    url = MAP_TIMES_URL
+    name = "api:local_forecast:map:times"
+    requires_auth = False
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Capture hass so the shared frame-time cache is read per request."""
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        """Return ``{layer_id: frame_time}``, or 404 when the map is disabled."""
+        if not self._hass.data.get(DOMAIN, {}).get("map_enabled"):
+            return web.Response(status=404)
+        return web.json_response(
+            await async_get_frame_times(self._hass),
+            headers={"Cache-Control": "no-store"},
         )
 
 
@@ -109,28 +143,81 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <script src="__STATIC__/leaflet.js"></script>
 <style>
   html, body, #map { height: 100%; margin: 0; background: #000; }
+  #stamp {
+    position: fixed; right: 8px; bottom: 8px; z-index: 1000;
+    padding: 3px 7px; border-radius: 4px; pointer-events: none;
+    background: rgba(0, 0, 0, 0.6); color: #fff;
+    font: 12px/1.4 system-ui, sans-serif;
+  }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="stamp"></div>
 <script>
   const cfg = __CONFIG__;
   const map = L.map('map', { worldCopyJump: true, maxZoom: cfg.maxZoom });
   map.setView(cfg.center, cfg.zoom);
+
+  const stamp = document.getElementById('stamp');
+  const wmsLayers = [];
+  let active = null;
+
   const baseLayers = {};
   cfg.layers.forEach((layer, i) => {
-    const wms = L.tileLayer.wms(cfg.base, {
+    const params = {
       layers: layer.id,
       format: 'image/png',
       transparent: false,
       version: cfg.version,
       detectRetina: true,
       maxZoom: cfg.maxZoom,
-    });
+    };
+    // Pinning TIME gives every frame its own URL, so a cached tile can never
+    // masquerade as the current one. Omitted when the timeline is unknown,
+    // which falls back to the server's own "latest".
+    if (cfg.times[layer.id]) params.time = cfg.times[layer.id];
+    const wms = L.tileLayer.wms(cfg.base, params);
+    wms.layerId = layer.id;
+    wmsLayers.push(wms);
     baseLayers[layer.name] = wms;
-    if (i === 0) wms.addTo(map);
+    if (i === 0) { active = wms; wms.addTo(map); }
   });
   L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
+  map.on('baselayerchange', (e) => { active = e.layer; showStamp(); });
+
+  function showStamp() {
+    const t = active && active.wmsParams.time;
+    stamp.textContent = t ? new Date(t).toLocaleString() : 'latest available';
+  }
+
+  function applyTimes(times) {
+    wmsLayers.forEach((wms) => {
+      const t = times[wms.layerId];
+      if (t && t !== wms.wmsParams.time) {
+        wms.setParams({ time: t }, !map.hasLayer(wms));
+      }
+    });
+    showStamp();
+  }
+
+  async function refresh() {
+    try {
+      const resp = await fetch(cfg.timesUrl, { cache: 'no-store' });
+      if (resp.ok) applyTimes(await resp.json());
+    } catch (err) {
+      // Keep displaying the last frame we know about.
+    }
+  }
+
+  setInterval(refresh, cfg.refreshMs);
+  // Safari serves an iframe straight out of its back-forward cache, so a
+  // returning tab never re-runs the page unless pageshow is handled.
+  window.addEventListener('pageshow', refresh);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refresh();
+  });
+  showStamp();
 </script>
 </body>
 </html>

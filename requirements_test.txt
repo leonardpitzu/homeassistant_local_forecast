@@ -11,6 +11,9 @@ aiodns>=3.2.0  # Python 3.13 compatible version
 # SQLAlchemy - required by Home Assistant recorder component
 sqlalchemy>=2.0.0  # Required for homeassistant.components.recorder
 
+# Declared in manifest.json; not a Home Assistant core dependency
+defusedxml>=0.7.1  # hardened XML parsing for the EUMETView capabilities feed
+
 # Code quality (optional)
 # pylint>=3.0.0
 # black>=24.0.0

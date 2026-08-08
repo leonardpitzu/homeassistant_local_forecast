@@ -10,7 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP, DOMAIN
-from .map import LocalForecastMapView, async_register_static_assets
+from .map import (
+    LocalForecastMapTimesView,
+    LocalForecastMapView,
+    async_register_static_assets,
+)
 from .pressure_history import PressureHistory
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ):
         await async_register_static_assets(hass)
         hass.http.register_view(LocalForecastMapView(hass))
+        hass.http.register_view(LocalForecastMapTimesView(hass))
         hass.data[DOMAIN]["map_view_registered"] = True
 
     # Weather must be set up before Sensor (sensor reads weather_entity)

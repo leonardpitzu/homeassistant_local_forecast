@@ -169,3 +169,31 @@ MAP_LAYERS: Final[list[tuple[str, str]]] = [
     ("msg_fes:rgb_ash", "Volcanic Ash"),
     ("msg_fes:rgb_fog", "Fog / Low Clouds"),
 ]
+
+# ---------------------------------------------------------------------------
+#  Frame pinning (see wms_time.py)
+#
+#  Without a TIME parameter every tile lives at a URL that never changes while
+#  its content does, so browser caches keep re-serving the first frame they saw.
+#  Pinning TIME gives each frame its own URL and the staleness cannot happen.
+# ---------------------------------------------------------------------------
+
+# GeoServer per-workspace virtual service. Its capabilities document is a
+# fraction of the global one (~85 KB for both workspaces against 282 KB) and
+# names layers without the workspace prefix.
+WMS_WORKSPACE_URL: Final = "https://view.eumetsat.int/geoserver/{workspace}/ows"
+
+MAP_TIMES_URL: Final = MAP_VIEW_URL + "/times"
+
+# Serve one cadence slot behind the newest advertised frame; the very latest is
+# occasionally still incomplete over part of the disc.
+MAP_FRAME_LAG_SLOTS: Final = 1
+
+# Frames land every 10 min (MTG) / 15 min (MSG) with ~20-25 min of
+# dissemination lag, so re-reading the timeline more often than this buys
+# nothing. The shorter retry applies when a capabilities fetch failed.
+MAP_TIME_CACHE_TTL: Final = 300.0
+MAP_TIME_RETRY_TTL: Final = 60.0
+
+# How often the viewer asks Home Assistant whether a newer frame exists.
+MAP_TIME_REFRESH_MS: Final = 300_000

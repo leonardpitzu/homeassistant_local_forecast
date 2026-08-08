@@ -7,6 +7,10 @@ instance and assert on the published states.
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+from unittest.mock import patch
+
 import pytest
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
@@ -20,11 +24,22 @@ from local_forecast.const import (
     CONF_WIND_DIRECTION_SENSOR,
     CONF_WIND_SPEED_SENSOR,
     DOMAIN,
+    MAP_TIME_CACHE_TTL,
     PRESSURE_ABSOLUTE,
 )
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 WEATHER = "weather.local_weather_forecast"
+
+
+def _wms_time() -> ModuleType:
+    """Return the wms_time module Home Assistant actually loaded.
+
+    The test harness imports the component from a temp config dir, so the
+    running module is ``custom_components.local_forecast.wms_time`` — patching
+    the copy reachable as ``local_forecast.wms_time`` would have no effect.
+    """
+    return sys.modules["custom_components.local_forecast.wms_time"]
 
 
 def _entry(hass: HomeAssistant, **overrides) -> MockConfigEntry:
@@ -215,6 +230,71 @@ async def test_map_endpoint_is_gated_and_coarse(hass, sensors, hass_client_no_au
     asset = await client.get("/local_forecast_static/leaflet.js")
     assert asset.status == 200
     assert "Leaflet" in await asset.text()
+
+
+async def test_map_times_endpoint_serves_and_caches_frame_times(
+    hass, sensors, hass_client_no_auth
+):
+    """One capabilities read per workspace per TTL, however many browsers ask."""
+    await async_setup_component(hass, "http", {})
+    await _setup(hass, _entry(hass, enable_map=True))
+    calls: list[str] = []
+
+    async def fake_fetch(session, workspace):
+        calls.append(workspace)
+        return {f"{workspace}:rgb_dust": "2026-08-08T00:30:00Z"}
+
+    client = await hass_client_no_auth()
+    with patch.object(_wms_time(), "_async_fetch_workspace", fake_fetch):
+        first = await (await client.get("/api/local_forecast/map/times")).json()
+        second = await (await client.get("/api/local_forecast/map/times")).json()
+
+    assert first["msg_fes:rgb_dust"] == "2026-08-08T00:30:00Z"
+    assert second == first
+    assert sorted(calls) == ["msg_fes", "mtg_fd"]
+
+
+async def test_map_times_survive_a_failed_refresh(hass, sensors, freezer):
+    """A stale frame beats no frame, so the last good answer is kept."""
+    await async_setup_component(hass, "http", {})
+    await _setup(hass, _entry(hass, enable_map=True))
+    module = _wms_time()
+
+    async def good(session, workspace):
+        return {f"{workspace}:rgb_dust": "2026-08-08T00:30:00Z"}
+
+    async def unreachable(session, workspace):
+        return None
+
+    with patch.object(module, "_async_fetch_workspace", good):
+        await module.async_get_frame_times(hass)
+
+    freezer.tick(MAP_TIME_CACHE_TTL + 1)
+    with patch.object(module, "_async_fetch_workspace", unreachable):
+        times = await module.async_get_frame_times(hass)
+
+    assert times["msg_fes:rgb_dust"] == "2026-08-08T00:30:00Z"
+
+
+async def test_map_page_pins_the_frame_time_it_knows(
+    hass, sensors, hass_client_no_auth
+):
+    """The pinned TIME is what stops a cached tile posing as the current one."""
+    await async_setup_component(hass, "http", {})
+    await _setup(hass, _entry(hass, enable_map=True))
+
+    async def fake_fetch(session, workspace):
+        if workspace != "mtg_fd":
+            return {}
+        return {"mtg_fd:rgb_geocolour": "2026-08-08T00:40:00Z"}
+
+    client = await hass_client_no_auth()
+    with patch.object(_wms_time(), "_async_fetch_workspace", fake_fetch):
+        await client.get("/api/local_forecast/map/times")
+
+    body = await (await client.get("/api/local_forecast/map")).text()
+    assert '"mtg_fd:rgb_geocolour": "2026-08-08T00:40:00Z"' in body
+    assert "params.time" in body
 
 
 async def test_setup_with_recorder_present(recorder_mock, hass, sensors):
