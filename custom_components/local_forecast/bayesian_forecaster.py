@@ -13,8 +13,8 @@ precipitation states for precipitation_probability.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
+import math
 
 from .const import (
     FORECAST_HOURS,
@@ -233,10 +233,11 @@ class BayesianForecaster:
                 damp = 0.9 ** h
                 pres_h = smoothed.pressure + smoothed.dp_dt * h * damp
 
-            if predict_humidity is not None:
-                hum_h = predict_humidity(h)
-            else:
-                hum_h = smoothed.humidity
+            hum_h = (
+                predict_humidity(h)
+                if predict_humidity is not None
+                else smoothed.humidity
+            )
 
             # --- Step 3: Bayesian evidence update ---
             prob = self._apply_evidence(
@@ -400,7 +401,7 @@ class BayesianForecaster:
             likelihood[S_FOG] *= max(0.2, 1.0 - 0.6 * w)
 
         # Multiply prior × likelihood
-        return [p * lk for p, lk in zip(prob, likelihood)]
+        return [p * lk for p, lk in zip(prob, likelihood, strict=True)]
 
     def _apply_constraints(
         self, prob: list[float], wet_bulb: float, is_night: bool

@@ -11,9 +11,9 @@ No Home Assistant dependencies — pure Python + math.
 from __future__ import annotations
 
 import bisect
-import math
 from collections import deque
 from dataclasses import dataclass
+import math
 
 from .const import (
     FOG_DEW_DEPRESSION,
@@ -323,10 +323,7 @@ class StateEstimator:
         if prev == "cloudy":
             # Stay cloudy unless cloud drops well below 0.50
             if cloud < 0.50 - h:
-                if cloud < 0.15 - h:
-                    new = "clear"
-                else:
-                    new = "partly"
+                new = "clear" if cloud < 0.15 - h else "partly"
             else:
                 new = "cloudy"
         elif prev == "partly":
@@ -447,7 +444,7 @@ class StateEstimator:
             )
             hum = [
                 (t, r.humidity_pct)
-                for t, r in zip(w_times, window)
+                for t, r in zip(w_times, window, strict=True)
                 if r.humidity_pct is not None
             ]
             if len(hum) >= 2:
@@ -480,7 +477,10 @@ class StateEstimator:
         denom = sum((t - mean_t) ** 2 for t in times_h)
         if denom <= 1e-12:
             return 0.0
-        num = sum((t - mean_t) * (v - mean_v) for t, v in zip(times_h, values))
+        num = sum(
+            (t - mean_t) * (v - mean_v)
+            for t, v in zip(times_h, values, strict=True)
+        )
         return num / denom
 
     def _compute_moisture(self) -> None:

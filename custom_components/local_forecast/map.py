@@ -17,6 +17,8 @@ not there. Embed it with an `iframe` card pointing at ``/api/local_forecast/map`
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 
@@ -25,7 +27,7 @@ from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import (
-    DOMAIN,
+    DATA_MAP,
     MAP_CENTER_GRID,
     MAP_DEFAULT_ZOOM,
     MAP_FALLBACK_CENTER,
@@ -41,6 +43,21 @@ from .const import (
 from .wms_time import async_get_frame_times, cached_frame_times
 
 LEAFLET_DIR = Path(__file__).parent / "leaflet"
+
+
+@dataclass(slots=True)
+class MapState:
+    """Everything the map owns outside a config entry.
+
+    Both the gate and the EUMETView frame-time cache are shared by every
+    entry, so they live here rather than being duplicated per entry.
+    """
+
+    enabled: bool = False
+    views_registered: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    frame_times_expire: float = 0.0
+    frame_times: dict[str, str] = field(default_factory=dict)
 
 
 async def async_register_static_assets(hass: HomeAssistant) -> None:
@@ -63,7 +80,7 @@ class LocalForecastMapView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Return the viewer HTML, or 404 when the map is disabled."""
-        if not self._hass.data.get(DOMAIN, {}).get("map_enabled"):
+        if not self._hass.data[DATA_MAP].enabled:
             return web.Response(status=404)
         return web.Response(
             text=self._render(cached_frame_times(self._hass)),
@@ -103,6 +120,9 @@ class LocalForecastMapView(HomeAssistantView):
                 "refreshMs": MAP_TIME_REFRESH_MS,
             }
         )
+        # json.dumps does not escape `</script>`; inside a script element that
+        # would end the block early, so keep `<` out of the literal entirely.
+        config = config.replace("<", "\\u003c")
         return _HTML_TEMPLATE.replace("__CONFIG__", config).replace(
             "__STATIC__", MAP_STATIC_URL
         )
@@ -125,7 +145,7 @@ class LocalForecastMapTimesView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Return ``{layer_id: frame_time}``, or 404 when the map is disabled."""
-        if not self._hass.data.get(DOMAIN, {}).get("map_enabled"):
+        if not self._hass.data[DATA_MAP].enabled:
             return web.Response(status=404)
         return web.json_response(
             await async_get_frame_times(self._hass),

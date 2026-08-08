@@ -1,12 +1,25 @@
 """Constants for the Local Weather Forecast integration."""
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+from homeassistant.util.hass_dict import HassKey
+
+if TYPE_CHECKING:
+    from .map import MapState
 
 DOMAIN: Final = "local_forecast"
 
-# Dispatcher signal the weather entity fires after every pipeline run so the
-# sensor entities can push their state instead of polling independently.
-SIGNAL_UPDATE: Final = "local_forecast_update_{}"
+# Everything the integration keeps outside a config entry lives behind this one
+# typed key: the map gate plus the shared EUMETView frame-time cache.
+DATA_MAP: HassKey["MapState"] = HassKey(f"{DOMAIN}_map")
+
+# Persisted sea-level pressure buffer.
+STORAGE_VERSION: Final = 1
+
+# Refresh policy. The interval is the safety net for a station whose sensors
+# sit perfectly still; the debounce is the coalescing window for chatty ones.
+UPDATE_INTERVAL_MINUTES: Final = 5
+UPDATE_DEBOUNCE_SECONDS: Final = 30.0
 
 # --- Config keys: required sensors ---
 CONF_PRESSURE_SENSOR: Final = "pressure_sensor"

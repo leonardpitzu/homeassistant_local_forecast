@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+
 from local_forecast.wms_time import _frame_time, _parse_period, parse_capabilities
 
 WMS_NS = 'xmlns="http://www.opengis.net/wms"'

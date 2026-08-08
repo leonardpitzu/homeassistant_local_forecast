@@ -19,11 +19,10 @@ answer: a slightly old frame beats no frame.
 
 from __future__ import annotations
 
-import asyncio
+from datetime import timedelta
 import logging
 import re
 import time
-from datetime import timedelta
 
 import aiohttp
 from defusedxml import ElementTree as ET
@@ -33,7 +32,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    DOMAIN,
+    DATA_MAP,
     MAP_FRAME_LAG_SLOTS,
     MAP_LAYERS,
     MAP_TIME_CACHE_TTL,
@@ -48,9 +47,6 @@ _WMS_NS = "{http://www.opengis.net/wms}"
 _LAYER_PATH = f"{_WMS_NS}Layer"
 _NAME_PATH = f"{_WMS_NS}Name"
 _TIME_DIM_PATH = f"{_WMS_NS}Dimension[@name='time']"
-
-_CACHE_KEY = "map_frame_times"
-_LOCK_KEY = "map_frame_times_lock"
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
@@ -112,7 +108,7 @@ def parse_capabilities(xml: bytes, workspace: str) -> dict[str, str]:
 
 
 async def _async_fetch_workspace(
-    session: aiohttp.ClientSession, workspace: str
+    hass: HomeAssistant, session: aiohttp.ClientSession, workspace: str
 ) -> dict[str, str] | None:
     """Read one workspace's layer timelines, or None if it could not be read."""
     try:
@@ -132,7 +128,10 @@ async def _async_fetch_workspace(
         return None
 
     try:
-        return parse_capabilities(body, workspace)
+        # Tens of kilobytes of XML per workspace: parse it off the event loop.
+        return await hass.async_add_executor_job(
+            parse_capabilities, body, workspace
+        )
     except (ET.ParseError, DefusedXmlException) as err:
         _LOGGER.debug("Could not parse %s capabilities: %s", workspace, err)
         return None
@@ -144,8 +143,7 @@ def cached_frame_times(hass: HomeAssistant) -> dict[str, str]:
     The viewer renders from this so the page never waits on EUMETView; it asks
     the times endpoint for anything missing as soon as it has loaded.
     """
-    _, times = hass.data.get(DOMAIN, {}).get(_CACHE_KEY, (0.0, {}))
-    return times
+    return hass.data[DATA_MAP].frame_times
 
 
 async def async_get_frame_times(hass: HomeAssistant) -> dict[str, str]:
@@ -154,22 +152,22 @@ async def async_get_frame_times(hass: HomeAssistant) -> dict[str, str]:
     Layers whose timeline could not be read are simply absent, and the viewer
     then omits ``TIME`` for them — which is exactly the pre-pinning behaviour.
     """
-    store = hass.data.setdefault(DOMAIN, {})
-    lock: asyncio.Lock = store.setdefault(_LOCK_KEY, asyncio.Lock())
+    state = hass.data[DATA_MAP]
 
-    async with lock:
-        expires, cached = store.get(_CACHE_KEY, (0.0, {}))
-        if time.monotonic() < expires:
-            return cached
+    async with state.lock:
+        if time.monotonic() < state.frame_times_expire:
+            return state.frame_times
 
         session = async_get_clientsession(hass)
-        times = dict(cached)
+        times = dict(state.frame_times)
         refreshed = False
         for workspace in _workspaces():
-            if (parsed := await _async_fetch_workspace(session, workspace)) is not None:
+            parsed = await _async_fetch_workspace(hass, session, workspace)
+            if parsed is not None:
                 times.update(parsed)
                 refreshed = True
 
         ttl = MAP_TIME_CACHE_TTL if refreshed else MAP_TIME_RETRY_TTL
-        store[_CACHE_KEY] = (time.monotonic() + ttl, times)
+        state.frame_times_expire = time.monotonic() + ttl
+        state.frame_times = times
         return times

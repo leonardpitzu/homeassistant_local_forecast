@@ -10,8 +10,8 @@ No Home Assistant dependencies — pure Python + math.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
+import math
 
 # ---------------------------------------------------------------------------
 #  Pressure Model — damped linear extrapolation
@@ -157,12 +157,11 @@ class TemperatureModel:
             pos = (hour - self.t_min) % 24
             frac = min(1.0, pos / max(0.5, span))
             return self.T0 - self.amplitude * 0.5 + self.amplitude * math.sin(frac * math.pi / 2)
-        else:
-            # Cooling phase (peak to next sunrise)
-            span = (self.t_min + 24 - self.t_max) % 24
-            pos = (hour - self.t_max) % 24
-            frac = min(1.0, pos / max(0.5, span))
-            return self.T0 + self.amplitude * 0.5 - self.amplitude * frac
+        # Cooling phase (peak to next sunrise)
+        span = (self.t_min + 24 - self.t_max) % 24
+        pos = (hour - self.t_max) % 24
+        frac = min(1.0, pos / max(0.5, span))
+        return self.T0 + self.amplitude * 0.5 - self.amplitude * frac
 
     def _is_night(self, hour: float) -> bool:
         return not self._is_between(hour, self.sunrise, self.sunset)

@@ -1,0 +1,22 @@
+[project]
+name = "local-forecast"
+version = "0.0.0"
+description = "Home Assistant custom integration: physics-based local weather forecast"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET", "ASYNC"]
+# SIM108 only ever proposes nested ternaries in this codebase.
+ignore = ["SIM108"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components", "local_forecast"]

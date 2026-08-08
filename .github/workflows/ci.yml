@@ -40,9 +40,9 @@ jobs:
           cache: pip
           cache-dependency-path: requirements_test.txt
       - name: Install test dependencies
-        run: |
-          pip install -r requirements_test.txt
-          pip install homeassistant
+        # pytest-homeassistant-custom-component pins the matching core; a
+        # second, unpinned `pip install homeassistant` would fight it.
+        run: pip install -r requirements_test.txt
       - name: Run tests
         run: pytest tests/ -v --cov=custom_components/local_forecast --cov-report=term-missing
 

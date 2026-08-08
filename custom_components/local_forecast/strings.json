@@ -49,6 +49,27 @@
   },
   "entity": {
     "sensor": {
+      "precipitation_probability": {
+        "name": "Precipitation probability"
+      },
+      "forecast_1h": {
+        "name": "1h forecast"
+      },
+      "next_hour_precipitation_probability": {
+        "name": "Next hour precipitation probability"
+      },
+      "sea_level_pressure": {
+        "name": "Sea level pressure"
+      },
+      "pressure_tendency": {
+        "name": "Pressure tendency"
+      },
+      "pressure_synoptic": {
+        "name": "Pressure synoptic"
+      },
+      "hourly_forecast": {
+        "name": "Hourly forecast"
+      },
       "barometer": {
         "name": "Barometer",
         "state": {

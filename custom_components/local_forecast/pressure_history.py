@@ -16,8 +16,8 @@ isolation.
 
 from __future__ import annotations
 
-import math
 from collections import deque
+import math
 
 # One sample per hour, keep a little over 24 h.
 SAMPLE_INTERVAL_S: float = 3600.0

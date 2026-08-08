@@ -11,10 +11,12 @@ import sys
 from types import ModuleType
 from unittest.mock import patch
 
-import pytest
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from local_forecast.const import (
     CONF_ELEVATION,
     CONF_HUMIDITY_SENSOR,
@@ -27,7 +29,6 @@ from local_forecast.const import (
     MAP_TIME_CACHE_TTL,
     PRESSURE_ABSOLUTE,
 )
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 WEATHER = "weather.local_weather_forecast"
 
@@ -105,6 +106,91 @@ async def test_all_sensor_entities_exist(hass, sensors):
     ):
         entity_id = f"sensor.local_weather_forecast_{suffix}"
         assert hass.states.get(entity_id) is not None, entity_id
+
+
+# entity_id, unique_id suffix, friendly name.  These three are what a
+# dashboard, an automation and a family remember; none of them may drift.
+EXPECTED_ENTITIES = [
+    ("weather.local_weather_forecast", "weather", "Local Weather Forecast"),
+    (
+        "sensor.local_weather_forecast_precipitation_probability",
+        "precip_prob_6h",
+        "Local Weather Forecast Precipitation probability",
+    ),
+    (
+        "sensor.local_weather_forecast_1h_forecast",
+        "next_hour_condition",
+        "Local Weather Forecast 1h forecast",
+    ),
+    (
+        "sensor.local_weather_forecast_next_hour_precipitation_probability",
+        "next_hour_precip_prob",
+        "Local Weather Forecast Next hour precipitation probability",
+    ),
+    (
+        "sensor.local_weather_forecast_sea_level_pressure",
+        "sea_level_pressure",
+        "Local Weather Forecast Sea level pressure",
+    ),
+    (
+        "sensor.local_weather_forecast_pressure_tendency",
+        "pressure_tendency",
+        "Local Weather Forecast Pressure tendency",
+    ),
+    (
+        "sensor.local_weather_forecast_pressure_tendency_direction",
+        "pressure_tendency_direction",
+        "Local Weather Forecast Pressure tendency direction",
+    ),
+    (
+        "sensor.local_weather_forecast_pressure_synoptic",
+        "pressure_synoptic",
+        "Local Weather Forecast Pressure synoptic",
+    ),
+    (
+        "sensor.local_weather_forecast_barometer",
+        "barometer",
+        "Local Weather Forecast Barometer",
+    ),
+    (
+        "sensor.local_weather_forecast_hourly_forecast",
+        "hourly_forecast",
+        "Local Weather Forecast Hourly forecast",
+    ),
+    (
+        "sensor.local_weather_forecast_front",
+        "front",
+        "Local Weather Forecast Front",
+    ),
+]
+
+
+async def test_entity_identity_is_frozen(hass, sensors, entity_registry):
+    """Renaming any of these silently breaks every existing dashboard."""
+    entry = _entry(hass)
+    await _setup(hass, entry)
+
+    for entity_id, unique_suffix, friendly_name in EXPECTED_ENTITIES:
+        registry_entry = entity_registry.async_get(entity_id)
+        assert registry_entry is not None, entity_id
+        assert registry_entry.unique_id == f"{entry.entry_id}_{unique_suffix}"
+        assert (
+            hass.states.get(entity_id).attributes["friendly_name"] == friendly_name
+        )
+
+
+async def test_static_icons_survive(hass, sensors):
+    """icons.json is resolved in the frontend only, so these stay on the entity."""
+    await _setup(hass, _entry(hass))
+
+    icons = {
+        "pressure_tendency": "mdi:gauge",
+        "pressure_synoptic": "mdi:gauge-low",
+        "hourly_forecast": "mdi:chart-line",
+    }
+    for suffix, icon in icons.items():
+        state = hass.states.get(f"sensor.local_weather_forecast_{suffix}")
+        assert state.attributes.get("icon") == icon, suffix
 
 
 async def test_unavailable_until_real_data_arrives(hass):
@@ -204,8 +290,7 @@ async def test_sensor_change_refreshes_the_entity(hass, sensors):
     _set(hass, "sensor.temperature", "25.0", "°C")
     await hass.async_block_till_done()
     entry = hass.config_entries.async_entries(DOMAIN)[0]
-    entity = hass.data[DOMAIN][entry.entry_id]["weather_entity"]
-    await entity._async_recalculate()
+    await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
 
     assert hass.states.get(WEATHER).attributes["temperature"] > before
@@ -240,7 +325,7 @@ async def test_map_times_endpoint_serves_and_caches_frame_times(
     await _setup(hass, _entry(hass, enable_map=True))
     calls: list[str] = []
 
-    async def fake_fetch(session, workspace):
+    async def fake_fetch(hass_arg, session, workspace):
         calls.append(workspace)
         return {f"{workspace}:rgb_dust": "2026-08-08T00:30:00Z"}
 
@@ -260,10 +345,10 @@ async def test_map_times_survive_a_failed_refresh(hass, sensors, freezer):
     await _setup(hass, _entry(hass, enable_map=True))
     module = _wms_time()
 
-    async def good(session, workspace):
+    async def good(hass_arg, session, workspace):
         return {f"{workspace}:rgb_dust": "2026-08-08T00:30:00Z"}
 
-    async def unreachable(session, workspace):
+    async def unreachable(hass_arg, session, workspace):
         return None
 
     with patch.object(module, "_async_fetch_workspace", good):
@@ -283,7 +368,7 @@ async def test_map_page_pins_the_frame_time_it_knows(
     await async_setup_component(hass, "http", {})
     await _setup(hass, _entry(hass, enable_map=True))
 
-    async def fake_fetch(session, workspace):
+    async def fake_fetch(hass_arg, session, workspace):
         if workspace != "mtg_fd":
             return {}
         return {"mtg_fd:rgb_geocolour": "2026-08-08T00:40:00Z"}

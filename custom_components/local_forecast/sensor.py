@@ -1,25 +1,30 @@
 """Sensor platform for Local Weather Forecast.
 
-Exposes key forecast attributes as standalone sensor entities so they
-have their own history, can be graphed in tile cards, and used in badges.
+Exposes key forecast values as standalone sensor entities so they have their
+own history, can be graphed in tile cards, and used in badges.  Every sensor
+is the same class; only its description differs.
 """
 
 from __future__ import annotations
 
-import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
+import time
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPressure
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.const import UnitOfPressure, UnitOfRatio
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .classifiers import (
     BAROMETER_OPTIONS,
@@ -29,8 +34,12 @@ from .classifiers import (
     front_state,
     tendency_direction,
 )
-from .const import DOMAIN, SIGNAL_UPDATE
-from .pressure_history import PressureHistory
+from .const import DOMAIN
+from .coordinator import (
+    ForecastResult,
+    LocalForecastConfigEntry,
+    LocalForecastCoordinator,
+)
 
 # HA condition string → human-readable label
 _CONDITION_LABELS: dict[str, str] = {
@@ -64,13 +73,12 @@ _CONDITION_ICONS: dict[str, str] = {
     "exceptional": "mdi:alert-circle-outline",
 }
 
-
 # Below this probability (%) the precip badge shows a neutral icon
 # instead of an alarming rain cloud under fair skies.
 _DRY_PROBABILITY_THRESHOLD = 20
 
 
-def _precip_icon(wet_bulb: float | None, probability: float | None = None) -> str:
+def _precip_icon(wet_bulb: float | None, probability: float | None) -> str:
     """Pick the precipitation icon.
 
     With a negligible probability, return a neutral 'dry' icon; otherwise
@@ -87,303 +95,181 @@ def _precip_icon(wet_bulb: float | None, probability: float | None = None) -> st
     return "mdi:weather-rainy"
 
 
+def _condition_label(data: ForecastResult) -> str | None:
+    condition = data.attributes.get("next_hour_condition")
+    if not condition:
+        return None
+    return _CONDITION_LABELS.get(condition, condition.replace("-", " ").title())
+
+
+def _tendency(coordinator: LocalForecastCoordinator, data: ForecastResult):
+    return coordinator.pressure_history.tendency_per_hour(time.time(), data.pressure)
+
+
+@dataclass(frozen=True, kw_only=True)
+class LocalForecastSensorEntityDescription(SensorEntityDescription):
+    """Describes one Local Weather Forecast sensor.
+
+    ``key`` doubles as the unique_id suffix; changing one renames an entity
+    that has been on somebody's dashboard for years.
+    """
+
+    value_fn: Callable[
+        [LocalForecastCoordinator, ForecastResult], StateType | datetime
+    ]
+    icon_fn: Callable[[ForecastResult], str] | None = None
+    attributes_fn: Callable[[ForecastResult], dict[str, Any]] | None = None
+
+
+SENSORS: tuple[LocalForecastSensorEntityDescription, ...] = (
+    LocalForecastSensorEntityDescription(
+        key="precip_prob_6h",
+        translation_key="precipitation_probability",
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda _c, d: d.attributes.get("precip_probability_6h"),
+        icon_fn=lambda d: _precip_icon(
+            d.attributes.get("wet_bulb"), d.attributes.get("precip_probability_6h")
+        ),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="next_hour_condition",
+        translation_key="forecast_1h",
+        value_fn=lambda _c, d: _condition_label(d),
+        icon_fn=lambda d: _CONDITION_ICONS.get(
+            d.attributes.get("next_hour_condition", ""), "mdi:weather-partly-cloudy"
+        ),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="next_hour_precip_prob",
+        translation_key="next_hour_precipitation_probability",
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda _c, d: d.attributes.get("next_hour_precip_probability"),
+        icon_fn=lambda d: _precip_icon(
+            d.attributes.get("wet_bulb"),
+            d.attributes.get("next_hour_precip_probability"),
+        ),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="sea_level_pressure",
+        translation_key="sea_level_pressure",
+        device_class=SensorDeviceClass.ATMOSPHERIC_PRESSURE,
+        native_unit_of_measurement=UnitOfPressure.HPA,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda _c, d: d.pressure,
+    ),
+    LocalForecastSensorEntityDescription(
+        key="pressure_tendency",
+        translation_key="pressure_tendency",
+        icon="mdi:gauge",
+        native_unit_of_measurement="hPa/h",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        value_fn=_tendency,
+    ),
+    LocalForecastSensorEntityDescription(
+        key="pressure_tendency_direction",
+        translation_key="pressure_tendency_direction",
+        device_class=SensorDeviceClass.ENUM,
+        options=TENDENCY_DIRECTION_OPTIONS,
+        value_fn=lambda c, d: tendency_direction(_tendency(c, d)),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="pressure_synoptic",
+        translation_key="pressure_synoptic",
+        icon="mdi:gauge-low",
+        device_class=SensorDeviceClass.ATMOSPHERIC_PRESSURE,
+        native_unit_of_measurement=UnitOfPressure.HPA,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+        value_fn=lambda c, d: c.pressure_history.mean(time.time(), d.pressure),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="barometer",
+        translation_key="barometer",
+        device_class=SensorDeviceClass.ENUM,
+        options=BAROMETER_OPTIONS,
+        value_fn=lambda c, d: barometer_state(d.pressure, _tendency(c, d)),
+    ),
+    LocalForecastSensorEntityDescription(
+        key="hourly_forecast",
+        translation_key="hourly_forecast",
+        icon="mdi:chart-line",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda _c, d: d.generated,
+        attributes_fn=lambda d: {"forecast": d.hourly_dicts},
+    ),
+    LocalForecastSensorEntityDescription(
+        key="front",
+        translation_key="front",
+        device_class=SensorDeviceClass.ENUM,
+        options=FRONT_OPTIONS,
+        value_fn=lambda _c, d: front_state(
+            d.attributes.get("front_warm"),
+            d.attributes.get("front_cold"),
+            d.attributes.get("front_occluded"),
+        ),
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: LocalForecastConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Local Weather Forecast sensor entities."""
-    data = hass.data[DOMAIN].get(entry.entry_id, {})
-    weather_entity = data.get("weather_entity")
-    if weather_entity is None:
-        return
-
-    pressure_history: PressureHistory = data["pressure_history"]
-
-    device_info = DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-    )
-
+    coordinator = entry.runtime_data
     async_add_entities(
-        [
-            PrecipProbability6hSensor(entry, weather_entity, device_info),
-            NextHourConditionSensor(entry, weather_entity, device_info),
-            NextHourPrecipProbabilitySensor(entry, weather_entity, device_info),
-            SeaLevelPressureSensor(entry, weather_entity, device_info),
-            PressureTendencySensor(
-                entry, weather_entity, device_info, pressure_history
-            ),
-            PressureTendencyDirectionSensor(
-                entry, weather_entity, device_info, pressure_history
-            ),
-            PressureSynopticSensor(
-                entry, weather_entity, device_info, pressure_history
-            ),
-            BarometerSensor(
-                entry, weather_entity, device_info, pressure_history
-            ),
-            HourlyForecastSensor(entry, weather_entity, device_info),
-            FrontSensor(entry, weather_entity, device_info),
-        ]
+        LocalForecastSensor(coordinator, description) for description in SENSORS
     )
 
 
-class _ForecastSensorBase(SensorEntity):
-    """Base class for forecast sensors that read from the weather entity."""
+class LocalForecastSensor(
+    CoordinatorEntity[LocalForecastCoordinator], SensorEntity
+):
+    """A single value taken from the latest forecast run."""
 
     _attr_has_entity_name = True
-    _attr_should_poll = False
+    entity_description: LocalForecastSensorEntityDescription
+    # Only the hourly-forecast sensor carries it, and it is live data for
+    # cards, not history worth writing to the database.
+    _unrecorded_attributes = frozenset({"forecast"})
 
     def __init__(
         self,
-        entry: ConfigEntry,
-        weather_entity,
-        device_info: DeviceInfo,
+        coordinator: LocalForecastCoordinator,
+        description: LocalForecastSensorEntityDescription,
     ) -> None:
-        self._entry_id = entry.entry_id
-        self._weather = weather_entity
-        self._attr_device_info = device_info
+        """Bind the sensor to its coordinator and description."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        entry_id = coordinator.config_entry.entry_id
+        self._attr_unique_id = f"{entry_id}_{description.key}"
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry_id)})
 
     @property
     def available(self) -> bool:
-        return self._weather.available
-
-    async def async_added_to_hass(self) -> None:
-        """Update when the weather entity finishes a pipeline run."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass,
-                SIGNAL_UPDATE.format(self._entry_id),
-                self._handle_update,
-            )
-        )
-
-    @callback
-    def _handle_update(self) -> None:
-        self.async_write_ha_state()
-
-
-class PrecipProbability6hSensor(_ForecastSensorBase):
-    """Probability of precipitation in the next 6 hours."""
-
-    _attr_name = "Precipitation probability"
-    _attr_native_unit_of_measurement = "%"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_precip_prob_6h"
+        return super().available and self.coordinator.data is not None
 
     @property
-    def native_value(self) -> int | None:
-        attrs = self._weather.extra_state_attributes
-        return attrs.get("precip_probability_6h")
+    def native_value(self) -> StateType | datetime:
+        if (data := self.coordinator.data) is None:
+            return None
+        return self.entity_description.value_fn(self.coordinator, data)
 
     @property
-    def icon(self) -> str:
-        attrs = self._weather.extra_state_attributes
-        return _precip_icon(
-            attrs.get("wet_bulb"), attrs.get("precip_probability_6h")
-        )
-
-
-class NextHourConditionSensor(_ForecastSensorBase):
-    """Forecast condition for the next hour."""
-
-    _attr_name = "1h forecast"
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_next_hour_condition"
+    def icon(self) -> str | None:
+        icon_fn = self.entity_description.icon_fn
+        if icon_fn is None or (data := self.coordinator.data) is None:
+            return super().icon
+        return icon_fn(data)
 
     @property
-    def native_value(self) -> str | None:
-        attrs = self._weather.extra_state_attributes
-        val = attrs.get("next_hour_condition")
-        if val:
-            return _CONDITION_LABELS.get(val, val.replace("-", " ").title())
-        return None
-
-    @property
-    def icon(self) -> str:
-        attrs = self._weather.extra_state_attributes
-        condition = attrs.get("next_hour_condition", "")
-        return _CONDITION_ICONS.get(condition, "mdi:weather-partly-cloudy")
-
-
-class NextHourPrecipProbabilitySensor(_ForecastSensorBase):
-    """Precipitation probability for the next hour."""
-
-    _attr_name = "Next hour precipitation probability"
-    _attr_native_unit_of_measurement = "%"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_next_hour_precip_prob"
-
-    @property
-    def native_value(self) -> int | None:
-        attrs = self._weather.extra_state_attributes
-        return attrs.get("next_hour_precip_probability")
-
-    @property
-    def icon(self) -> str:
-        attrs = self._weather.extra_state_attributes
-        return _precip_icon(
-            attrs.get("wet_bulb"), attrs.get("next_hour_precip_probability")
-        )
-
-
-class SeaLevelPressureSensor(_ForecastSensorBase):
-    """Sea-level (QNH) pressure — the value feeding the weather entity."""
-
-    _attr_name = "Sea level pressure"
-    _attr_device_class = SensorDeviceClass.ATMOSPHERIC_PRESSURE
-    _attr_native_unit_of_measurement = UnitOfPressure.HPA
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 1
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_sea_level_pressure"
-
-    @property
-    def native_value(self) -> float | None:
-        return self._weather.native_pressure
-
-
-class PressureTendencySensor(_ForecastSensorBase):
-    """WMO 3-hour pressure tendency (hPa/h)."""
-
-    _attr_name = "Pressure tendency"
-    _attr_native_unit_of_measurement = "hPa/h"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 2
-    _attr_icon = "mdi:gauge"
-
-    def __init__(
-        self, entry, weather_entity, device_info, history: PressureHistory
-    ) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._history = history
-        self._attr_unique_id = f"{entry.entry_id}_pressure_tendency"
-
-    @property
-    def native_value(self) -> float | None:
-        return self._history.tendency_per_hour(
-            time.time(), self._weather.native_pressure
-        )
-
-
-class PressureTendencyDirectionSensor(_ForecastSensorBase):
-    """Direction companion to the numeric tendency — an enum for badge icons."""
-
-    _attr_translation_key = "pressure_tendency_direction"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = TENDENCY_DIRECTION_OPTIONS
-
-    def __init__(
-        self, entry, weather_entity, device_info, history: PressureHistory
-    ) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._history = history
-        self._attr_unique_id = f"{entry.entry_id}_pressure_tendency_direction"
-
-    @property
-    def native_value(self) -> str | None:
-        tendency = self._history.tendency_per_hour(
-            time.time(), self._weather.native_pressure
-        )
-        return tendency_direction(tendency)
-
-
-class PressureSynopticSensor(_ForecastSensorBase):
-    """24-hour rolling mean of sea-level pressure (hPa)."""
-
-    _attr_name = "Pressure synoptic"
-    _attr_device_class = SensorDeviceClass.ATMOSPHERIC_PRESSURE
-    _attr_native_unit_of_measurement = UnitOfPressure.HPA
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_suggested_display_precision = 1
-    _attr_icon = "mdi:gauge-low"
-
-    def __init__(
-        self, entry, weather_entity, device_info, history: PressureHistory
-    ) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._history = history
-        self._attr_unique_id = f"{entry.entry_id}_pressure_synoptic"
-
-    @property
-    def native_value(self) -> float | None:
-        return self._history.mean(time.time(), self._weather.native_pressure)
-
-
-class BarometerSensor(_ForecastSensorBase):
-    """Tendency-aware barometer needle as an enum."""
-
-    _attr_translation_key = "barometer"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = BAROMETER_OPTIONS
-
-    def __init__(
-        self, entry, weather_entity, device_info, history: PressureHistory
-    ) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._history = history
-        self._attr_unique_id = f"{entry.entry_id}_barometer"
-
-    @property
-    def native_value(self) -> str | None:
-        pressure = self._weather.native_pressure
-        tendency = self._history.tendency_per_hour(time.time(), pressure)
-        return barometer_state(pressure, tendency)
-
-
-class HourlyForecastSensor(_ForecastSensorBase):
-    """Meteogram feed: forecast generation time + full hourly list.
-
-    The ``forecast`` attribute is excluded from the recorder — it is live
-    data for cards, not history worth writing to the database.
-    """
-
-    _attr_name = "Hourly forecast"
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:chart-line"
-    _unrecorded_attributes = frozenset({"forecast"})
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_hourly_forecast"
-
-    @property
-    def native_value(self) -> datetime | None:
-        return self._weather.forecast_generated
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        return {"forecast": self._weather.hourly_forecast_list()}
-
-
-class FrontSensor(_ForecastSensorBase):
-    """Frontal-passage identity as a single mutually-exclusive enum."""
-
-    _attr_translation_key = "front"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = FRONT_OPTIONS
-
-    def __init__(self, entry, weather_entity, device_info) -> None:
-        super().__init__(entry, weather_entity, device_info)
-        self._attr_unique_id = f"{entry.entry_id}_front"
-
-    @property
-    def native_value(self) -> str:
-        attrs = self._weather.extra_state_attributes
-        return front_state(
-            attrs.get("front_warm"),
-            attrs.get("front_cold"),
-            attrs.get("front_occluded"),
-        )
-
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attributes_fn = self.entity_description.attributes_fn
+        if attributes_fn is None or (data := self.coordinator.data) is None:
+            return None
+        return attributes_fn(data)
