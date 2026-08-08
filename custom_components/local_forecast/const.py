@@ -49,8 +49,8 @@ DEFAULT_PRESSURE_TYPE: Final = PRESSURE_ABSOLUTE
 DEFAULT_ENABLE_MAP: Final = False
 
 # --- Physical constants ---
-LAPSE_RATE: Final = 0.0065          # K/m  (ISA tropospheric lapse rate)
-GRAVITY_EXPONENT: Final = 5.257     # g/(L·R) for barometric formula
+LAPSE_RATE: Final = 0.0065  # K/m  (ISA tropospheric lapse rate)
+GRAVITY_EXPONENT: Final = 5.257  # g/(L·R) for barometric formula
 KELVIN_OFFSET: Final = 273.15
 
 # ---------------------------------------------------------------------------
@@ -91,18 +91,18 @@ NUM_STATES: Final = 12
 
 # Index → HA condition string  (this drives every icon your family sees)
 HA_CONDITIONS: Final = [
-    "sunny",              # 0  S_CLEAR
-    "clear-night",        # 1  S_CLEAR_NIGHT
-    "partlycloudy",       # 2  S_PARTLY_CLOUDY
-    "cloudy",             # 3  S_CLOUDY
-    "fog",                # 4  S_FOG
-    "rainy",              # 5  S_RAINY
-    "pouring",            # 6  S_POURING
-    "snowy",              # 7  S_SNOWY
-    "snowy-rainy",        # 8  S_SNOWY_RAINY
-    "lightning-rainy",    # 9  S_LIGHTNING_RAINY
-    "windy",              # 10 S_WINDY
-    "exceptional",        # 11 S_EXCEPTIONAL
+    "sunny",  # 0  S_CLEAR
+    "clear-night",  # 1  S_CLEAR_NIGHT
+    "partlycloudy",  # 2  S_PARTLY_CLOUDY
+    "cloudy",  # 3  S_CLOUDY
+    "fog",  # 4  S_FOG
+    "rainy",  # 5  S_RAINY
+    "pouring",  # 6  S_POURING
+    "snowy",  # 7  S_SNOWY
+    "snowy-rainy",  # 8  S_SNOWY_RAINY
+    "lightning-rainy",  # 9  S_LIGHTNING_RAINY
+    "windy",  # 10 S_WINDY
+    "exceptional",  # 11 S_EXCEPTIONAL
 ]
 
 # ---------------------------------------------------------------------------
@@ -124,16 +124,16 @@ RAIN_LIGHT: Final = 0.5
 RAIN_HEAVY: Final = 7.5
 
 # --- Fog ---
-FOG_DEW_DEPRESSION: Final = 1.5   # °C
-FOG_MAX_WIND: Final = 3.0         # m/s
+FOG_DEW_DEPRESSION: Final = 1.5  # °C
+FOG_MAX_WIND: Final = 3.0  # m/s
 
 # --- Wind ---
-WIND_STRONG: Final = 10.0         # m/s  (Beaufort 5-6)
+WIND_STRONG: Final = 10.0  # m/s  (Beaufort 5-6)
 
 # --- Thunderstorm proxy ---
 STORM_PRESSURE_DROP: Final = -3.0  # hPa/h
-STORM_HUMIDITY: Final = 80.0       # %
-STORM_WIND: Final = 8.0            # m/s
+STORM_HUMIDITY: Final = 80.0  # %
+STORM_WIND: Final = 8.0  # m/s
 
 # --- History ring-buffer ---
 # The trend code looks back in *time* (1 h for slopes, 3 h for curvature), so

@@ -41,25 +41,27 @@ from .state_estimator import SmoothedState, wet_bulb_stull
 #  Hourly forecast output
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class HourForecast:
     """One hour of forecast output."""
 
     hours_ahead: int
-    condition: str                   # HA condition string (drives the icon)
-    temperature: float               # °C
-    humidity: float                  # %
-    pressure: float                  # hPa
-    precipitation_probability: int   # 0-100
-    precipitation_amount: float      # mm expected in this hour
-    wind_speed: float                # m/s
-    wind_bearing: float              # degrees
-    is_daytime: bool = True          # day/night flag for icon variants
+    condition: str  # HA condition string (drives the icon)
+    temperature: float  # °C
+    humidity: float  # %
+    pressure: float  # hPa
+    precipitation_probability: int  # 0-100
+    precipitation_amount: float  # mm expected in this hour
+    wind_speed: float  # m/s
+    wind_bearing: float  # degrees
+    is_daytime: bool = True  # day/night flag for icon variants
 
 
 # ---------------------------------------------------------------------------
 #  Transition matrix
 # ---------------------------------------------------------------------------
+
 
 def _build_transition_matrix() -> list[list[float]]:
     """Build a 12×12 Markov transition matrix.
@@ -83,78 +85,164 @@ def _build_transition_matrix() -> list[list[float]]:
             T[src][dst] = p / total  # normalise
 
     # S_CLEAR (sunny)
-    _row(S_CLEAR, {
-        S_CLEAR: 0.70, S_CLEAR_NIGHT: 0.05, S_PARTLY_CLOUDY: 0.20,
-        S_CLOUDY: 0.03, S_FOG: 0.01, S_WINDY: 0.01,
-    })
+    _row(
+        S_CLEAR,
+        {
+            S_CLEAR: 0.70,
+            S_CLEAR_NIGHT: 0.05,
+            S_PARTLY_CLOUDY: 0.20,
+            S_CLOUDY: 0.03,
+            S_FOG: 0.01,
+            S_WINDY: 0.01,
+        },
+    )
 
     # S_CLEAR_NIGHT
-    _row(S_CLEAR_NIGHT, {
-        S_CLEAR_NIGHT: 0.65, S_CLEAR: 0.10, S_PARTLY_CLOUDY: 0.15,
-        S_CLOUDY: 0.04, S_FOG: 0.05, S_WINDY: 0.01,
-    })
+    _row(
+        S_CLEAR_NIGHT,
+        {
+            S_CLEAR_NIGHT: 0.65,
+            S_CLEAR: 0.10,
+            S_PARTLY_CLOUDY: 0.15,
+            S_CLOUDY: 0.04,
+            S_FOG: 0.05,
+            S_WINDY: 0.01,
+        },
+    )
 
     # S_PARTLY_CLOUDY
-    _row(S_PARTLY_CLOUDY, {
-        S_CLEAR: 0.15, S_CLEAR_NIGHT: 0.05, S_PARTLY_CLOUDY: 0.45,
-        S_CLOUDY: 0.25, S_RAINY: 0.05, S_FOG: 0.02, S_WINDY: 0.03,
-    })
+    _row(
+        S_PARTLY_CLOUDY,
+        {
+            S_CLEAR: 0.15,
+            S_CLEAR_NIGHT: 0.05,
+            S_PARTLY_CLOUDY: 0.45,
+            S_CLOUDY: 0.25,
+            S_RAINY: 0.05,
+            S_FOG: 0.02,
+            S_WINDY: 0.03,
+        },
+    )
 
     # S_CLOUDY
-    _row(S_CLOUDY, {
-        S_PARTLY_CLOUDY: 0.15, S_CLOUDY: 0.45, S_RAINY: 0.20,
-        S_FOG: 0.05, S_POURING: 0.05, S_SNOWY: 0.03,
-        S_SNOWY_RAINY: 0.02, S_LIGHTNING_RAINY: 0.02, S_WINDY: 0.03,
-    })
+    _row(
+        S_CLOUDY,
+        {
+            S_PARTLY_CLOUDY: 0.15,
+            S_CLOUDY: 0.45,
+            S_RAINY: 0.20,
+            S_FOG: 0.05,
+            S_POURING: 0.05,
+            S_SNOWY: 0.03,
+            S_SNOWY_RAINY: 0.02,
+            S_LIGHTNING_RAINY: 0.02,
+            S_WINDY: 0.03,
+        },
+    )
 
     # S_FOG
-    _row(S_FOG, {
-        S_FOG: 0.60, S_CLOUDY: 0.20, S_PARTLY_CLOUDY: 0.10,
-        S_CLEAR: 0.05, S_CLEAR_NIGHT: 0.05,
-    })
+    _row(
+        S_FOG,
+        {
+            S_FOG: 0.60,
+            S_CLOUDY: 0.20,
+            S_PARTLY_CLOUDY: 0.10,
+            S_CLEAR: 0.05,
+            S_CLEAR_NIGHT: 0.05,
+        },
+    )
 
     # S_RAINY
-    _row(S_RAINY, {
-        S_RAINY: 0.50, S_CLOUDY: 0.20, S_POURING: 0.10,
-        S_PARTLY_CLOUDY: 0.05, S_SNOWY_RAINY: 0.05,
-        S_LIGHTNING_RAINY: 0.05, S_SNOWY: 0.03, S_FOG: 0.02,
-    })
+    _row(
+        S_RAINY,
+        {
+            S_RAINY: 0.50,
+            S_CLOUDY: 0.20,
+            S_POURING: 0.10,
+            S_PARTLY_CLOUDY: 0.05,
+            S_SNOWY_RAINY: 0.05,
+            S_LIGHTNING_RAINY: 0.05,
+            S_SNOWY: 0.03,
+            S_FOG: 0.02,
+        },
+    )
 
     # S_POURING
-    _row(S_POURING, {
-        S_POURING: 0.40, S_RAINY: 0.30, S_LIGHTNING_RAINY: 0.10,
-        S_CLOUDY: 0.10, S_SNOWY_RAINY: 0.05, S_SNOWY: 0.05,
-    })
+    _row(
+        S_POURING,
+        {
+            S_POURING: 0.40,
+            S_RAINY: 0.30,
+            S_LIGHTNING_RAINY: 0.10,
+            S_CLOUDY: 0.10,
+            S_SNOWY_RAINY: 0.05,
+            S_SNOWY: 0.05,
+        },
+    )
 
     # S_SNOWY
-    _row(S_SNOWY, {
-        S_SNOWY: 0.55, S_SNOWY_RAINY: 0.15, S_CLOUDY: 0.15,
-        S_RAINY: 0.05, S_PARTLY_CLOUDY: 0.05, S_FOG: 0.05,
-    })
+    _row(
+        S_SNOWY,
+        {
+            S_SNOWY: 0.55,
+            S_SNOWY_RAINY: 0.15,
+            S_CLOUDY: 0.15,
+            S_RAINY: 0.05,
+            S_PARTLY_CLOUDY: 0.05,
+            S_FOG: 0.05,
+        },
+    )
 
     # S_SNOWY_RAINY (sleet)
-    _row(S_SNOWY_RAINY, {
-        S_SNOWY_RAINY: 0.35, S_SNOWY: 0.20, S_RAINY: 0.20,
-        S_CLOUDY: 0.15, S_POURING: 0.05, S_FOG: 0.05,
-    })
+    _row(
+        S_SNOWY_RAINY,
+        {
+            S_SNOWY_RAINY: 0.35,
+            S_SNOWY: 0.20,
+            S_RAINY: 0.20,
+            S_CLOUDY: 0.15,
+            S_POURING: 0.05,
+            S_FOG: 0.05,
+        },
+    )
 
     # S_LIGHTNING_RAINY
-    _row(S_LIGHTNING_RAINY, {
-        S_LIGHTNING_RAINY: 0.30, S_POURING: 0.25, S_RAINY: 0.25,
-        S_CLOUDY: 0.10, S_WINDY: 0.05, S_PARTLY_CLOUDY: 0.05,
-    })
+    _row(
+        S_LIGHTNING_RAINY,
+        {
+            S_LIGHTNING_RAINY: 0.30,
+            S_POURING: 0.25,
+            S_RAINY: 0.25,
+            S_CLOUDY: 0.10,
+            S_WINDY: 0.05,
+            S_PARTLY_CLOUDY: 0.05,
+        },
+    )
 
     # S_WINDY
-    _row(S_WINDY, {
-        S_WINDY: 0.40, S_PARTLY_CLOUDY: 0.20, S_CLOUDY: 0.20,
-        S_CLEAR: 0.10, S_RAINY: 0.05, S_CLEAR_NIGHT: 0.05,
-    })
+    _row(
+        S_WINDY,
+        {
+            S_WINDY: 0.40,
+            S_PARTLY_CLOUDY: 0.20,
+            S_CLOUDY: 0.20,
+            S_CLEAR: 0.10,
+            S_RAINY: 0.05,
+            S_CLEAR_NIGHT: 0.05,
+        },
+    )
 
     # S_EXCEPTIONAL
-    _row(S_EXCEPTIONAL, {
-        S_EXCEPTIONAL: 0.30, S_POURING: 0.25, S_LIGHTNING_RAINY: 0.20,
-        S_RAINY: 0.15, S_WINDY: 0.10,
-    })
+    _row(
+        S_EXCEPTIONAL,
+        {
+            S_EXCEPTIONAL: 0.30,
+            S_POURING: 0.25,
+            S_LIGHTNING_RAINY: 0.20,
+            S_RAINY: 0.15,
+            S_WINDY: 0.10,
+        },
+    )
 
     return T
 
@@ -163,14 +251,13 @@ TRANSITION_MATRIX: list[list[float]] = _build_transition_matrix()
 
 # Condition strings that actually carry precipitation.  Anything else has its
 # expected-precip amount zeroed so cards never read "cloudy, 1mm".
-_PRECIP_CONDITIONS: frozenset[str] = frozenset(
-    {"rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy"}
-)
+_PRECIP_CONDITIONS: frozenset[str] = frozenset({"rainy", "pouring", "snowy", "snowy-rainy", "lightning-rainy"})
 
 
 # ---------------------------------------------------------------------------
 #  Bayesian Forecaster
 # ---------------------------------------------------------------------------
+
 
 class BayesianForecaster:
     """Advance a probability vector through time with evidence updates."""
@@ -230,24 +317,16 @@ class BayesianForecaster:
                 pres_h = predict_pressure(h)
             else:
                 # Damped linear extrapolation
-                damp = 0.9 ** h
+                damp = 0.9**h
                 pres_h = smoothed.pressure + smoothed.dp_dt * h * damp
 
-            hum_h = (
-                predict_humidity(h)
-                if predict_humidity is not None
-                else smoothed.humidity
-            )
+            hum_h = predict_humidity(h) if predict_humidity is not None else smoothed.humidity
 
             # --- Step 3: Bayesian evidence update ---
-            prob = self._apply_evidence(
-                prob, smoothed, temp_h, pres_h, hum_h, is_night, h
-            )
+            prob = self._apply_evidence(prob, smoothed, temp_h, pres_h, hum_h, is_night, h)
 
             # --- Step 4: Physical constraints (hard overrides) ---
-            prob = self._apply_constraints(
-                prob, wet_bulb_stull(temp_h, hum_h), is_night
-            )
+            prob = self._apply_constraints(prob, wet_bulb_stull(temp_h, hum_h), is_night)
 
             # --- Step 5: Normalise ---
             prob = self._normalise(prob)
@@ -264,10 +343,7 @@ class BayesianForecaster:
             condition = HA_CONDITIONS[best]
 
             # Precipitation probability = sum of all wet states
-            precip_prob = sum(
-                prob[i]
-                for i in (S_RAINY, S_POURING, S_SNOWY, S_SNOWY_RAINY, S_LIGHTNING_RAINY)
-            )
+            precip_prob = sum(prob[i] for i in (S_RAINY, S_POURING, S_SNOWY, S_SNOWY_RAINY, S_LIGHTNING_RAINY))
 
             # Expected precipitation (rough: map probability to mm/h)
             precip_mm = self._estimate_precip_amount(prob, smoothed.rain_rate)
@@ -277,18 +353,20 @@ class BayesianForecaster:
             if condition not in _PRECIP_CONDITIONS:
                 precip_mm = 0.0
 
-            results.append(HourForecast(
-                hours_ahead=h,
-                condition=condition,
-                temperature=round(temp_h, 1),
-                humidity=round(max(1, min(100, hum_h)), 0),
-                pressure=round(pres_h, 1),
-                precipitation_probability=round(min(100, precip_prob * 100)),
-                precipitation_amount=round(precip_mm, 1),
-                wind_speed=round(wind_speed_h, 1),
-                wind_bearing=round(wind_bearing_h),
-                is_daytime=not is_night,
-            ))
+            results.append(
+                HourForecast(
+                    hours_ahead=h,
+                    condition=condition,
+                    temperature=round(temp_h, 1),
+                    humidity=round(max(1, min(100, hum_h)), 0),
+                    pressure=round(pres_h, 1),
+                    precipitation_probability=round(min(100, precip_prob * 100)),
+                    precipitation_amount=round(precip_mm, 1),
+                    wind_speed=round(wind_speed_h, 1),
+                    wind_bearing=round(wind_bearing_h),
+                    is_daytime=not is_night,
+                )
+            )
 
         return results
 
@@ -403,9 +481,7 @@ class BayesianForecaster:
         # Multiply prior × likelihood
         return [p * lk for p, lk in zip(prob, likelihood, strict=True)]
 
-    def _apply_constraints(
-        self, prob: list[float], wet_bulb: float, is_night: bool
-    ) -> list[float]:
+    def _apply_constraints(self, prob: list[float], wet_bulb: float, is_night: bool) -> list[float]:
         """Hard physical constraints — zero out impossible states.
 
         Precipitation type is decided by wet-bulb temperature, the same way
@@ -440,9 +516,7 @@ class BayesianForecaster:
             return [1.0 / NUM_STATES] * NUM_STATES
         return [p / total for p in prob]
 
-    def _estimate_precip_amount(
-        self, prob: list[float], current_rain_rate: float
-    ) -> float:
+    def _estimate_precip_amount(self, prob: list[float], current_rain_rate: float) -> float:
         """Rough expected precipitation in mm for this hour."""
         p_light = prob[S_RAINY] + prob[S_SNOWY] + prob[S_SNOWY_RAINY]
         p_heavy = prob[S_POURING] + prob[S_LIGHTNING_RAINY]

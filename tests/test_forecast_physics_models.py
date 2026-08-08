@@ -19,6 +19,7 @@ from local_forecast.physics_models import (
 #  PressureModel
 # =====================================================================
 
+
 class TestPressureModel:
     """Damped linear pressure extrapolation."""
 
@@ -64,6 +65,7 @@ class TestPressureModel:
 #  TemperatureModel
 # =====================================================================
 
+
 class TestTemperatureModel:
     """Energy-balance + diurnal temperature model."""
 
@@ -100,8 +102,10 @@ class TestTemperatureModel:
     def test_evening_cooling(self):
         """After sunset, temperature should drop."""
         tm = self._model(
-            current_hour=21.0, current_temp=22.0,
-            cloud_fraction=0.0, wind_speed=1.0,
+            current_hour=21.0,
+            current_temp=22.0,
+            cloud_fraction=0.0,
+            wind_speed=1.0,
         )
         # 4 hours into the night
         assert tm(4) < 22.0
@@ -115,12 +119,18 @@ class TestTemperatureModel:
     def test_radiative_cooling_clear_night(self):
         """Clear nights cool more than cloudy ones."""
         tm_clear = self._model(
-            current_hour=22.0, current_temp=15.0,
-            cloud_fraction=0.0, wind_speed=1.0, humidity=40.0,
+            current_hour=22.0,
+            current_temp=15.0,
+            cloud_fraction=0.0,
+            wind_speed=1.0,
+            humidity=40.0,
         )
         tm_cloudy = self._model(
-            current_hour=22.0, current_temp=15.0,
-            cloud_fraction=0.8, wind_speed=1.0, humidity=40.0,
+            current_hour=22.0,
+            current_temp=15.0,
+            cloud_fraction=0.8,
+            wind_speed=1.0,
+            humidity=40.0,
         )
         # Clear night cools more
         assert tm_clear(6) <= tm_cloudy(6)
@@ -149,35 +159,50 @@ class TestTemperatureModel:
 #  HumidityModel
 # =====================================================================
 
+
 class TestHumidityModel:
     """Clausius-Clapeyron relative humidity model."""
 
     def test_cooling_increases_rh(self):
         """When temperature drops, RH rises (Clausius-Clapeyron)."""
-        def temp_fn(h): return 20.0 - h * 1.0  # cooling 1°C/h
+
+        def temp_fn(h):
+            return 20.0 - h * 1.0  # cooling 1°C/h
+
         hm = HumidityModel(current_rh=60.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(3) > 60.0
 
     def test_warming_decreases_rh(self):
         """When temperature rises, RH drops."""
-        def temp_fn(h): return 20.0 + h * 1.0
+
+        def temp_fn(h):
+            return 20.0 + h * 1.0
+
         hm = HumidityModel(current_rh=70.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(3) < 70.0
 
     def test_no_temp_change_no_rh_change(self):
-        def temp_fn(h): return 20.0
+        def temp_fn(h):
+            return 20.0
+
         hm = HumidityModel(current_rh=55.0, current_temp=20.0, temperature_model=temp_fn)
         assert abs(hm(5) - 55.0) < 0.5
 
     def test_clamped_upper(self):
         """RH should not exceed 100%."""
-        def temp_fn(h): return 20.0 - h * 5.0  # rapid cooling
+
+        def temp_fn(h):
+            return 20.0 - h * 5.0  # rapid cooling
+
         hm = HumidityModel(current_rh=80.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(6) <= 100.0
 
     def test_clamped_lower(self):
         """RH should not drop below 1%."""
-        def temp_fn(h): return 20.0 + h * 10.0  # extreme warming
+
+        def temp_fn(h):
+            return 20.0 + h * 10.0  # extreme warming
+
         hm = HumidityModel(current_rh=10.0, current_temp=20.0, temperature_model=temp_fn)
         assert hm(6) >= 1.0
 
@@ -200,9 +225,13 @@ class TestHumidityModel:
     def test_symmetry_with_temperature_model(self):
         """HumidityModel integrates correctly with TemperatureModel."""
         tm = TemperatureModel(
-            current_temp=20.0, dt_dt=0.0, humidity=60.0,
-            wind_speed=3.0, cloud_fraction=0.3,
-            sunrise_hour=6.0, sunset_hour=20.0,
+            current_temp=20.0,
+            dt_dt=0.0,
+            humidity=60.0,
+            wind_speed=3.0,
+            cloud_fraction=0.3,
+            sunrise_hour=6.0,
+            sunset_hour=20.0,
             current_hour=14.0,
         )
         hm = HumidityModel(current_rh=60.0, current_temp=20.0, temperature_model=tm)
@@ -215,15 +244,20 @@ class TestHumidityModel:
 #  Cross-model consistency
 # =====================================================================
 
+
 class TestCrossModelConsistency:
     """Models working together produce physically consistent results."""
 
     def test_cooling_night_raises_humidity(self):
         """Clear night: temp drops → RH rises."""
         tm = TemperatureModel(
-            current_temp=18.0, dt_dt=-0.5, humidity=55.0,
-            wind_speed=1.0, cloud_fraction=0.1,
-            sunrise_hour=6.0, sunset_hour=20.0,
+            current_temp=18.0,
+            dt_dt=-0.5,
+            humidity=55.0,
+            wind_speed=1.0,
+            cloud_fraction=0.1,
+            sunrise_hour=6.0,
+            sunset_hour=20.0,
             current_hour=22.0,
         )
         hm = HumidityModel(current_rh=55.0, current_temp=18.0, temperature_model=tm)
@@ -234,9 +268,14 @@ class TestCrossModelConsistency:
         """Pressure model is independent of temperature."""
         pm = PressureModel(current=1010.0, dp_dt=-1.0)
         tm = TemperatureModel(
-            current_temp=25.0, dt_dt=0.0, humidity=50.0,
-            wind_speed=3.0, cloud_fraction=0.3,
-            sunrise_hour=6.0, sunset_hour=20.0, current_hour=12.0,
+            current_temp=25.0,
+            dt_dt=0.0,
+            humidity=50.0,
+            wind_speed=3.0,
+            cloud_fraction=0.3,
+            sunrise_hour=6.0,
+            sunset_hour=20.0,
+            current_hour=12.0,
         )
         # Pressure doesn't depend on temperature model
         p6 = pm(6)
@@ -249,6 +288,7 @@ class TestCrossModelConsistency:
 # =====================================================================
 #  WindModel
 # =====================================================================
+
 
 class TestWindModel:
     """Wind speed persistence + regression to mean, bearing evolution."""

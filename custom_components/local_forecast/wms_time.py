@@ -129,9 +129,7 @@ async def _async_fetch_workspace(
 
     try:
         # Tens of kilobytes of XML per workspace: parse it off the event loop.
-        return await hass.async_add_executor_job(
-            parse_capabilities, body, workspace
-        )
+        return await hass.async_add_executor_job(parse_capabilities, body, workspace)
     except (ET.ParseError, DefusedXmlException) as err:
         _LOGGER.debug("Could not parse %s capabilities: %s", workspace, err)
         return None

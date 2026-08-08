@@ -62,9 +62,7 @@ class MapState:
 
 async def async_register_static_assets(hass: HomeAssistant) -> None:
     """Expose the vendored Leaflet bundle."""
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(MAP_STATIC_URL, str(LEAFLET_DIR), True)]
-    )
+    await hass.http.async_register_static_paths([StaticPathConfig(MAP_STATIC_URL, str(LEAFLET_DIR), True)])
 
 
 class LocalForecastMapView(HomeAssistantView):
@@ -123,9 +121,7 @@ class LocalForecastMapView(HomeAssistantView):
         # json.dumps does not escape `</script>`; inside a script element that
         # would end the block early, so keep `<` out of the literal entirely.
         config = config.replace("<", "\\u003c")
-        return _HTML_TEMPLATE.replace("__CONFIG__", config).replace(
-            "__STATIC__", MAP_STATIC_URL
-        )
+        return _HTML_TEMPLATE.replace("__CONFIG__", config).replace("__STATIC__", MAP_STATIC_URL)
 
 
 class LocalForecastMapTimesView(HomeAssistantView):

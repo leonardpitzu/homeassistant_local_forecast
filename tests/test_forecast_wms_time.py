@@ -103,8 +103,7 @@ def test_parse_capabilities_skips_layers_without_a_usable_time_dimension():
     times = parse_capabilities(
         _caps(
             "<Layer><Name>rgb_notime</Name></Layer>",
-            '<Layer><Name>rgb_nodefault</Name><Dimension name="time">'
-            f"{MTG_DOMAIN}</Dimension></Layer>",
+            f'<Layer><Name>rgb_nodefault</Name><Dimension name="time">{MTG_DOMAIN}</Dimension></Layer>',
             _layer("rgb_ok", "2026-08-08T00:50:00Z", MTG_DOMAIN),
         ),
         "mtg_fd",

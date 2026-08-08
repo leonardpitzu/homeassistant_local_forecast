@@ -174,9 +174,7 @@ async def test_entity_identity_is_frozen(hass, sensors, entity_registry):
         registry_entry = entity_registry.async_get(entity_id)
         assert registry_entry is not None, entity_id
         assert registry_entry.unique_id == f"{entry.entry_id}_{unique_suffix}"
-        assert (
-            hass.states.get(entity_id).attributes["friendly_name"] == friendly_name
-        )
+        assert hass.states.get(entity_id).attributes["friendly_name"] == friendly_name
 
 
 async def test_static_icons_survive(hass, sensors):
@@ -200,10 +198,7 @@ async def test_unavailable_until_real_data_arrives(hass):
     await _setup(hass, _entry(hass))
 
     assert hass.states.get(WEATHER).state == STATE_UNAVAILABLE
-    assert (
-        hass.states.get("sensor.local_weather_forecast_sea_level_pressure").state
-        == STATE_UNAVAILABLE
-    )
+    assert hass.states.get("sensor.local_weather_forecast_sea_level_pressure").state == STATE_UNAVAILABLE
 
 
 async def test_unconfigured_channels_report_none(hass):
@@ -317,9 +312,7 @@ async def test_map_endpoint_is_gated_and_coarse(hass, sensors, hass_client_no_au
     assert "Leaflet" in await asset.text()
 
 
-async def test_map_times_endpoint_serves_and_caches_frame_times(
-    hass, sensors, hass_client_no_auth
-):
+async def test_map_times_endpoint_serves_and_caches_frame_times(hass, sensors, hass_client_no_auth):
     """One capabilities read per workspace per TTL, however many browsers ask."""
     await async_setup_component(hass, "http", {})
     await _setup(hass, _entry(hass, enable_map=True))
@@ -361,9 +354,7 @@ async def test_map_times_survive_a_failed_refresh(hass, sensors, freezer):
     assert times["msg_fes:rgb_dust"] == "2026-08-08T00:30:00Z"
 
 
-async def test_map_page_pins_the_frame_time_it_knows(
-    hass, sensors, hass_client_no_auth
-):
+async def test_map_page_pins_the_frame_time_it_knows(hass, sensors, hass_client_no_auth):
     """The pinned TIME is what stops a cached tile posing as the current one."""
     await async_setup_component(hass, "http", {})
     await _setup(hass, _entry(hass, enable_map=True))

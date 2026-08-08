@@ -83,14 +83,34 @@ _SENSOR_KEYS: Final = (
 )
 
 _BEAUFORT_NAMES: Final = (
-    "Calm", "Light air", "Light breeze", "Gentle breeze",
-    "Moderate breeze", "Fresh breeze", "Strong breeze",
-    "Near gale", "Gale", "Strong gale", "Storm",
-    "Violent storm", "Hurricane force",
+    "Calm",
+    "Light air",
+    "Light breeze",
+    "Gentle breeze",
+    "Moderate breeze",
+    "Fresh breeze",
+    "Strong breeze",
+    "Near gale",
+    "Gale",
+    "Strong gale",
+    "Storm",
+    "Violent storm",
+    "Hurricane force",
 )
 # WMO Beaufort upper bounds (m/s) for scales 0-11; at/above the last -> 12.
 _BEAUFORT_THRESHOLDS: Final = (
-    0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7,
+    0.3,
+    1.6,
+    3.4,
+    5.5,
+    8.0,
+    10.8,
+    13.9,
+    17.2,
+    20.8,
+    24.5,
+    28.5,
+    32.7,
 )
 
 # Sea-level pressure window every published value must fall inside.
@@ -129,9 +149,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
     config_entry: LocalForecastConfigEntry
 
-    def __init__(
-        self, hass: HomeAssistant, entry: LocalForecastConfigEntry
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, entry: LocalForecastConfigEntry) -> None:
         """Set up the pipeline, its persistence and its refresh policy."""
         super().__init__(
             hass,
@@ -142,9 +160,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             setup_method=self._async_backfill_history,
             # Coalescing window, not a reset-on-event debounce: a station that
             # updates faster than the cooldown must still get a refresh.
-            request_refresh_debouncer=Debouncer(
-                hass, _LOGGER, cooldown=UPDATE_DEBOUNCE_SECONDS, immediate=False
-            ),
+            request_refresh_debouncer=Debouncer(hass, _LOGGER, cooldown=UPDATE_DEBOUNCE_SECONDS, immediate=False),
         )
         # Options are a full re-submission of the config form, so when they
         # exist they are authoritative — merging them over data would resurrect
@@ -159,9 +175,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         self._has_data = False
 
         self.pressure_history = PressureHistory()
-        self._store: Store[dict[str, Any]] = Store(
-            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.pressure"
-        )
+        self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.pressure")
 
         # Sample timestamps must be monotonic — the history buffer is bisected
         # on them — but also comparable to recorder timestamps, so anchor a
@@ -182,17 +196,11 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
     def async_track_sources(self, entry: ConfigEntry) -> None:
         """Refresh whenever one of the configured source sensors changes."""
         if ids := [self._config[k] for k in _SENSOR_KEYS if self._config.get(k)]:
-            entry.async_on_unload(
-                async_track_state_change_event(
-                    self.hass, ids, self._async_source_changed
-                )
-            )
+            entry.async_on_unload(async_track_state_change_event(self.hass, ids, self._async_source_changed))
 
     @callback
     def _async_source_changed(self, _event: Event) -> None:
-        self.config_entry.async_create_task(
-            self.hass, self.async_request_refresh(), eager_start=False
-        )
+        self.config_entry.async_create_task(self.hass, self.async_request_refresh(), eager_start=False)
 
     # ------------------------------------------------------------------
     #  Config helpers
@@ -317,9 +325,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         return out
 
     @staticmethod
-    def _align(
-        series: list[tuple[float, float]], cursor: int, ts: float
-    ) -> tuple[int, float | None]:
+    def _align(series: list[tuple[float, float]], cursor: int, ts: float) -> tuple[int, float | None]:
         """Advance ``cursor`` to the last sample at or before ``ts``.
 
         Callers must query with non-decreasing ``ts``; the cursor only ever
@@ -364,18 +370,13 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
     def _to_sea_level(self, pressure: float, temperature: float) -> float:
         """Convert station pressure (QFE) to sea level (QNH) when needed."""
-        if (
-            self._config.get(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE)
-            == PRESSURE_RELATIVE
-        ):
+        if self._config.get(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE) == PRESSURE_RELATIVE:
             return pressure
         elevation = self._config.get(CONF_ELEVATION, DEFAULT_ELEVATION)
         if not elevation:
             return pressure
         temp_kelvin = max(200.0, temperature + KELVIN_OFFSET)
-        return pressure * (
-            1 - LAPSE_RATE * elevation / temp_kelvin
-        ) ** -GRAVITY_EXPONENT
+        return pressure * (1 - LAPSE_RATE * elevation / temp_kelvin) ** -GRAVITY_EXPONENT
 
     def _read_float(self, config_key: str) -> float | None:
         sid = self._config.get(config_key)
@@ -384,9 +385,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         state = self.hass.states.get(sid)
         if state is None or state.state in ("unknown", "unavailable", ""):
             return None
-        return self._parse(
-            state.state, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT), config_key
-        )
+        return self._parse(state.state, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT), config_key)
 
     @staticmethod
     def _parse(raw: Any, unit: str | None, config_key: str) -> float | None:
@@ -436,11 +435,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         sun = self.hass.states.get("sun.sun")
         # sun.sun already answers this correctly at every latitude and across
         # midnight; re-deriving it from decimal hours does not.
-        s.is_night = (
-            sun.state == "below_horizon"
-            if sun is not None
-            else not (sunrise_h <= now_h < sunset_h)
-        )
+        s.is_night = sun.state == "below_horizon" if sun is not None else not (sunrise_h <= now_h < sunset_h)
 
         # Cloud fraction: computed once and reused for both the classifier
         # (section 7 hysteresis) and the temperature model below.
@@ -449,8 +444,13 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
         _LOGGER.debug(
             "Pipeline: P=%.1f dp/dt=%.2f T=%.1f RH=%.0f wind=%.1f state=%s night=%s",
-            s.pressure, s.dp_dt, s.temperature, s.humidity,
-            s.wind_speed, HA_CONDITIONS[current_idx], s.is_night,
+            s.pressure,
+            s.dp_dt,
+            s.temperature,
+            s.humidity,
+            s.wind_speed,
+            HA_CONDITIONS[current_idx],
+            s.is_night,
         )
 
         temp_model = TemperatureModel(
@@ -481,7 +481,9 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             h1 = hourly[0]
             _LOGGER.debug(
                 "Forecast: %d hours, +1h=%s %.1f°C %d%% precip",
-                len(hourly), h1.condition, h1.temperature,
+                len(hourly),
+                h1.condition,
+                h1.temperature,
                 h1.precipitation_probability,
             )
 
@@ -495,24 +497,12 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             temperature=round(s.temperature, 1),
             apparent_temperature=self._apparent_temperature(),
             pressure=round(s.pressure, 1),
-            humidity=(
-                round(s.humidity)
-                if self.has_source(CONF_HUMIDITY_SENSOR)
-                else None
-            ),
-            wind_speed=(
-                round(s.wind_speed, 1)
-                if self.has_source(CONF_WIND_SPEED_SENSOR)
-                else None
-            ),
+            humidity=(round(s.humidity) if self.has_source(CONF_HUMIDITY_SENSOR) else None),
+            wind_speed=(round(s.wind_speed, 1) if self.has_source(CONF_WIND_SPEED_SENSOR) else None),
             wind_bearing=(
-                round((s.wind_direction + 360) % 360)
-                if self.has_source(CONF_WIND_DIRECTION_SENSOR)
-                else None
+                round((s.wind_direction + 360) % 360) if self.has_source(CONF_WIND_DIRECTION_SENSOR) else None
             ),
-            dew_point=(
-                s.dew_point if self.has_source(CONF_HUMIDITY_SENSOR) else None
-            ),
+            dew_point=(s.dew_point if self.has_source(CONF_HUMIDITY_SENSOR) else None),
             hourly_dicts=_hourly_dicts(hourly, now_local),
         )
 
@@ -533,24 +523,13 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         temp, wind, humidity = s.temperature, s.wind_speed, s.humidity
         # Wind chill (Environment Canada formula, T < 10 °C, W > 4.8 km/h)
         wind_kmh = wind * 3.6
-        if (
-            self.has_source(CONF_WIND_SPEED_SENSOR)
-            and temp <= 10.0
-            and wind_kmh > 4.8
-        ):
+        if self.has_source(CONF_WIND_SPEED_SENSOR) and temp <= 10.0 and wind_kmh > 4.8:
             return round(
-                13.12
-                + 0.6215 * temp
-                - 11.37 * wind_kmh**0.16
-                + 0.3965 * temp * wind_kmh**0.16,
+                13.12 + 0.6215 * temp - 11.37 * wind_kmh**0.16 + 0.3965 * temp * wind_kmh**0.16,
                 1,
             )
         # Heat index (Steadman, T > 27 °C)
-        if (
-            self.has_source(CONF_HUMIDITY_SENSOR)
-            and temp >= 27.0
-            and humidity >= 40
-        ):
+        if self.has_source(CONF_HUMIDITY_SENSOR) and temp >= 27.0 and humidity >= 40:
             return round(
                 -8.785
                 + 1.611 * temp
@@ -594,9 +573,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             # day reads ~35%.  The window maximum is the honest "chance of
             # rain in the next 6 hours" for a non-technical dashboard.
             if len(hourly) >= 6:
-                attrs["precip_probability_6h"] = max(
-                    hf.precipitation_probability for hf in hourly[:6]
-                )
+                attrs["precip_probability_6h"] = max(hf.precipitation_probability for hf in hourly[:6])
         return attrs
 
     # ------------------------------------------------------------------
@@ -617,12 +594,8 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         """Return (sunrise_hour, sunset_hour) in local decimal hours."""
         if sun := self.hass.states.get("sun.sun"):
             try:
-                rising = dt_util.parse_datetime(
-                    sun.attributes.get("next_rising", "")
-                )
-                setting = dt_util.parse_datetime(
-                    sun.attributes.get("next_setting", "")
-                )
+                rising = dt_util.parse_datetime(sun.attributes.get("next_rising", ""))
+                setting = dt_util.parse_datetime(sun.attributes.get("next_setting", ""))
                 if rising and setting:
                     rise_local = dt_util.as_local(rising)
                     set_local = dt_util.as_local(setting)
@@ -635,9 +608,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         return (6.0, 20.0)
 
 
-def _hourly_dicts(
-    hourly: list[HourForecast], generated: datetime
-) -> list[dict[str, Any]]:
+def _hourly_dicts(hourly: list[HourForecast], generated: datetime) -> list[dict[str, Any]]:
     """Hourly forecast as plain dicts for the meteogram sensor attribute.
 
     Mirrors what ``get_forecasts`` returns but in the entity's native units,

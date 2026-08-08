@@ -33,9 +33,7 @@ from .const import (
     PRESSURE_RELATIVE,
 )
 
-SENSOR_SELECTOR = selector.EntitySelector(
-    selector.EntitySelectorConfig(domain="sensor")
-)
+SENSOR_SELECTOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
 
 PRESSURE_TYPE_SELECTOR = selector.SelectSelector(
     selector.SelectSelectorConfig(
@@ -86,25 +84,17 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
         ): SENSOR_SELECTOR,
     }
     for key in OPTIONAL_SENSOR_KEYS:
-        fields[
-            vol.Optional(key, description={"suggested_value": defaults.get(key)})
-        ] = SENSOR_SELECTOR
-    fields[
-        vol.Optional(
-            CONF_ELEVATION, default=defaults.get(CONF_ELEVATION, DEFAULT_ELEVATION)
-        )
-    ] = vol.Coerce(int)
+        fields[vol.Optional(key, description={"suggested_value": defaults.get(key)})] = SENSOR_SELECTOR
+    fields[vol.Optional(CONF_ELEVATION, default=defaults.get(CONF_ELEVATION, DEFAULT_ELEVATION))] = vol.Coerce(int)
     fields[
         vol.Optional(
             CONF_PRESSURE_TYPE,
             default=defaults.get(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE),
         )
     ] = PRESSURE_TYPE_SELECTOR
-    fields[
-        vol.Optional(
-            CONF_ENABLE_MAP, default=defaults.get(CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP)
-        )
-    ] = selector.BooleanSelector()
+    fields[vol.Optional(CONF_ENABLE_MAP, default=defaults.get(CONF_ENABLE_MAP, DEFAULT_ENABLE_MAP))] = (
+        selector.BooleanSelector()
+    )
     return vol.Schema(fields)
 
 
@@ -113,9 +103,7 @@ class LocalForecastConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -124,9 +112,7 @@ class LocalForecastConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 await self.async_set_unique_id(user_input[CONF_PRESSURE_SENSOR])
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title="Local Weather Forecast", data=_cleaned(user_input)
-                )
+                return self.async_create_entry(title="Local Weather Forecast", data=_cleaned(user_input))
 
         return self.async_show_form(
             step_id="user",
@@ -144,9 +130,7 @@ class LocalForecastConfigFlow(ConfigFlow, domain=DOMAIN):
 class LocalForecastOptionsFlow(OptionsFlowWithReload):
     """Handle options (re-configure sensors)."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Re-submit the whole configuration form."""
         errors: dict[str, str] = {}
 
@@ -159,6 +143,4 @@ class LocalForecastOptionsFlow(OptionsFlowWithReload):
         # user just submitted so a validation error does not wipe the form.
         entry = self.config_entry
         defaults = {**(entry.options or entry.data), **(user_input or {})}
-        return self.async_show_form(
-            step_id="init", data_schema=_schema(defaults), errors=errors
-        )
+        return self.async_show_form(step_id="init", data_schema=_schema(defaults), errors=errors)

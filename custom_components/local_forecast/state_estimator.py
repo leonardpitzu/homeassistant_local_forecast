@@ -47,14 +47,15 @@ from .tide import tide_hpa_at
 #  Data containers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SensorReading:
     """Single snapshot from all available sensors."""
 
-    timestamp: float                          # epoch seconds
-    pressure_hpa: float                       # sea-level pressure
+    timestamp: float  # epoch seconds
+    pressure_hpa: float  # sea-level pressure
     temperature_c: float
-    humidity_pct: float | None = None      # 0-100
+    humidity_pct: float | None = None  # 0-100
     wind_speed_ms: float | None = None
     wind_direction_deg: float | None = None
     solar_radiation_wm2: float | None = None
@@ -74,16 +75,16 @@ class SmoothedState:
     rain_rate: float = 0.0
 
     # Derivatives (per hour)
-    dp_dt: float = 0.0           # hPa/h  — pressure tendency
-    d2p_dt2: float = 0.0         # hPa/h² — pressure acceleration
-    dt_dt: float = 0.0           # °C/h
-    dh_dt: float = 0.0           # %/h
+    dp_dt: float = 0.0  # hPa/h  — pressure tendency
+    d2p_dt2: float = 0.0  # hPa/h² — pressure acceleration
+    dt_dt: float = 0.0  # °C/h
+    dh_dt: float = 0.0  # %/h
 
     # Moisture
     dew_point: float = 10.0
     dew_depression: float = 5.0  # T − Td
-    dd_trend: float = 0.0        # dew-depression change (°C/h)
-    wet_bulb: float = 10.0       # Tw for precip-type decisions
+    dd_trend: float = 0.0  # dew-depression change (°C/h)
+    wet_bulb: float = 10.0  # Tw for precip-type decisions
 
     # Frontal flags
     front_warm: bool = False
@@ -106,9 +107,9 @@ class _KalmanChannel:
 
     x: float = 0.0
     p: float = 1.0
-    q: float = 0.01             # process noise
-    r: float = 0.1              # measurement noise
-    initialized: bool = False   # seed x from the first valid reading
+    q: float = 0.01  # process noise
+    r: float = 0.1  # measurement noise
+    initialized: bool = False  # seed x from the first valid reading
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ class _KalmanChannel:
 # Rain persistence: seconds after last detected rain before clearing
 # the rain icon.  Showers come in bursts — without this the icon
 # flip-flops every minute.
-RAIN_PERSIST_SECONDS: float = 1200.0   # 20 minutes
+RAIN_PERSIST_SECONDS: float = 1200.0  # 20 minutes
 
 # Cloud classification hysteresis band (fraction).  To switch from
 # partly-cloudy → cloudy the fraction must exceed the threshold by
@@ -127,7 +128,7 @@ CLOUD_HYSTERESIS: float = 0.06
 
 # After rain ends, how long (seconds) to keep a cloud-fraction floor.
 # Clouds don't vanish the instant the rain gauge dries.
-POST_RAIN_CLOUD_SECONDS: float = 1800.0   # 30 minutes
+POST_RAIN_CLOUD_SECONDS: float = 1800.0  # 30 minutes
 POST_RAIN_CLOUD_FLOOR: float = 0.40
 
 # Wind-direction smoothing factor (exponential, applied to unit vectors).
@@ -154,7 +155,7 @@ def wet_bulb_stull(temperature_c: float, humidity_pct: float) -> float:
         t * math.atan(0.151977 * math.sqrt(rh + 8.313659))
         + math.atan(t + rh)
         - math.atan(rh - 1.676331)
-        + 0.00391838 * (rh ** 1.5) * math.atan(0.023101 * rh)
+        + 0.00391838 * (rh**1.5) * math.atan(0.023101 * rh)
         - 4.686035
     )
     return max(dew_point_magnus(t, rh), min(t, raw))
@@ -176,10 +177,10 @@ class StateEstimator:
         self._latitude = latitude
         self._longitude = longitude
         self._kf: dict[str, _KalmanChannel] = {
-            "pressure":    _KalmanChannel(q=0.005, r=0.15),
-            "temperature": _KalmanChannel(q=0.02,  r=0.3),
-            "humidity":    _KalmanChannel(q=0.05,  r=1.0),
-            "wind_speed":  _KalmanChannel(q=0.1,   r=0.5),
+            "pressure": _KalmanChannel(q=0.005, r=0.15),
+            "temperature": _KalmanChannel(q=0.02, r=0.3),
+            "humidity": _KalmanChannel(q=0.05, r=1.0),
+            "wind_speed": _KalmanChannel(q=0.1, r=0.5),
         }
         self._state = SmoothedState()
         self._prev_dd: float | None = None
@@ -187,8 +188,8 @@ class StateEstimator:
         # Circular (vector) smoothing of wind bearing
         self._wind_dir_sin: float | None = None
         self._wind_dir_cos: float | None = None
-        self._last_rain_ts: float | None = None   # epoch of last rain_rate >= RAIN_LIGHT
-        self._prev_cloud_state: str = "clear"         # "clear" | "partly" | "cloudy"
+        self._last_rain_ts: float | None = None  # epoch of last rain_rate >= RAIN_LIGHT
+        self._prev_cloud_state: str = "clear"  # "clear" | "partly" | "cloudy"
 
     # ------------------------------------------------------------------
     #  Public API
@@ -210,12 +211,8 @@ class StateEstimator:
         if reading.wind_speed_ms is not None:
             self._state.wind_speed = self._kalman("wind_speed", reading.wind_speed_ms)
         if reading.wind_direction_deg is not None:
-            self._state.wind_direction = self._smooth_wind_direction(
-                reading.wind_direction_deg
-            )
-            self._wind_history.append(
-                (reading.timestamp, reading.wind_direction_deg)
-            )
+            self._state.wind_direction = self._smooth_wind_direction(reading.wind_direction_deg)
+            self._wind_history.append((reading.timestamp, reading.wind_direction_deg))
         if reading.solar_radiation_wm2 is not None:
             self._state.solar_radiation = reading.solar_radiation_wm2
         if reading.rain_rate_mmh is not None:
@@ -267,7 +264,7 @@ class StateEstimator:
 
         # --- 1 & 2: Active precipitation (rain sensor) ---
         if s.rain_rate >= RAIN_LIGHT:
-            self._prev_cloud_state = "cloudy"   # rain implies overcast
+            self._prev_cloud_state = "cloudy"  # rain implies overcast
             return self._precip_state(s)
 
         # --- 1b: Rain persistence — keep rain icon for a while after ---
@@ -276,23 +273,15 @@ class StateEstimator:
         if self._last_rain_ts is not None and len(self._history) > 0:
             age = self._history[-1].timestamp - self._last_rain_ts
             if age < RAIN_PERSIST_SECONDS:
-                self._prev_cloud_state = "cloudy"   # still in rain episode
+                self._prev_cloud_state = "cloudy"  # still in rain episode
                 return self._precip_state(s)
 
         # --- 3: Thunderstorm proxy ---
-        if (
-            s.dp_dt < STORM_PRESSURE_DROP
-            and s.humidity > STORM_HUMIDITY
-            and s.wind_speed > STORM_WIND
-        ):
+        if s.dp_dt < STORM_PRESSURE_DROP and s.humidity > STORM_HUMIDITY and s.wind_speed > STORM_WIND:
             return S_LIGHTNING_RAINY
 
         # --- 4: Fog ---
-        if (
-            s.has_humidity
-            and s.dew_depression < FOG_DEW_DEPRESSION
-            and s.wind_speed < FOG_MAX_WIND
-        ):
+        if s.has_humidity and s.dew_depression < FOG_DEW_DEPRESSION and s.wind_speed < FOG_MAX_WIND:
             return S_FOG
 
         # --- 5: Exceptional (bomb cyclone: pressure drop > 24 hPa / 24h) ---
@@ -307,11 +296,7 @@ class StateEstimator:
         # Reuse a precomputed base fraction when the caller already has one
         # (the weather entity needs the same value for its temperature model,
         # so computing it twice per tick is pure waste).
-        cloud = (
-            self._estimate_cloud_fraction(sun_elevation_deg)
-            if cloud_fraction is None
-            else cloud_fraction
-        )
+        cloud = self._estimate_cloud_fraction(sun_elevation_deg) if cloud_fraction is None else cloud_fraction
 
         # Apply post-rain cloud floor: clouds linger after showers
         if self._last_rain_ts is not None and len(self._history) > 0:
@@ -415,9 +400,7 @@ class StateEstimator:
             a = WIND_DIR_SMOOTH_ALPHA
             self._wind_dir_sin += a * (s_comp - self._wind_dir_sin)
             self._wind_dir_cos += a * (c_comp - self._wind_dir_cos)
-        return math.degrees(
-            math.atan2(self._wind_dir_sin, self._wind_dir_cos)
-        ) % 360.0
+        return math.degrees(math.atan2(self._wind_dir_sin, self._wind_dir_cos)) % 360.0
 
     def _compute_trends(self) -> None:
         """Compute dp/dt, d²p/dt², dT/dt, dH/dt from history ring buffer."""
@@ -441,28 +424,18 @@ class StateEstimator:
         window = hist[idx:]
         if len(window) >= 2 and (t_now - window[0].timestamp) >= 300.0:
             w_times = [(r.timestamp - t_now) / 3600.0 for r in window]
-            self._state.dp_dt = self._slope(
-                w_times, [self._detided(r) for r in window]
-            )
-            self._state.dt_dt = self._slope(
-                w_times, [r.temperature_c for r in window]
-            )
-            hum = [
-                (t, r.humidity_pct)
-                for t, r in zip(w_times, window, strict=True)
-                if r.humidity_pct is not None
-            ]
+            self._state.dp_dt = self._slope(w_times, [self._detided(r) for r in window])
+            self._state.dt_dt = self._slope(w_times, [r.temperature_c for r in window])
+            hum = [(t, r.humidity_pct) for t, r in zip(w_times, window, strict=True) if r.humidity_pct is not None]
             if len(hum) >= 2:
-                self._state.dh_dt = self._slope(
-                    [t for t, _ in hum], [h for _, h in hum]
-                )
+                self._state.dh_dt = self._slope([t for t, _ in hum], [h for _, h in hum])
 
         # Pressure acceleration over a ~3 h span, from the *actual* sample
         # spacing.  The samples the buffer returns are only approximately at
         # the requested offsets, so a fixed Δ² divisor mis-scales the result.
         #   d²P/dt² ≈ 2·(s₂ − s₁) / (t₂ − t₀)   with sᵢ the two secant slopes
-        ref_mid = self._nearest_sorted(times, hist, t_now - 5400)    # ~1.5 h ago
-        ref_old = self._nearest_sorted(times, hist, t_now - 10800)   # ~3 h ago
+        ref_mid = self._nearest_sorted(times, hist, t_now - 5400)  # ~1.5 h ago
+        ref_old = self._nearest_sorted(times, hist, t_now - 10800)  # ~3 h ago
         self._state.d2p_dt2 = 0.0
         if ref_mid is not None and ref_old is not None:
             t0 = (ref_old.timestamp - t_now) / 3600.0
@@ -480,9 +453,7 @@ class StateEstimator:
         reads. Only the tendency needs it gone, and there the tide is not a small
         correction — its own slope rivals the steady/moving threshold.
         """
-        return reading.pressure_hpa - tide_hpa_at(
-            reading.timestamp, self._latitude, self._longitude
-        )
+        return reading.pressure_hpa - tide_hpa_at(reading.timestamp, self._latitude, self._longitude)
 
     @staticmethod
     def _slope(times_h: list[float], values: list[float]) -> float:
@@ -493,10 +464,7 @@ class StateEstimator:
         denom = sum((t - mean_t) ** 2 for t in times_h)
         if denom <= 1e-12:
             return 0.0
-        num = sum(
-            (t - mean_t) * (v - mean_v)
-            for t, v in zip(times_h, values, strict=True)
-        )
+        num = sum((t - mean_t) * (v - mean_v) for t, v in zip(times_h, values, strict=True))
         return num / denom
 
     def _compute_moisture(self) -> None:
@@ -513,9 +481,7 @@ class StateEstimator:
         if self._prev_dd is not None and len(self._history) >= 2:
             dt = self._history[-1].timestamp - self._history[-2].timestamp
             if dt > 0:
-                self._state.dd_trend = (
-                    (self._state.dew_depression - self._prev_dd) / (dt / 3600)
-                )
+                self._state.dd_trend = (self._state.dew_depression - self._prev_dd) / (dt / 3600)
         self._prev_dd = self._state.dew_depression
 
     def _detect_fronts(self) -> None:
@@ -524,19 +490,13 @@ class StateEstimator:
         ws = self._wind_shift_rate()
 
         # Warm front: steady pressure fall + backing wind + rising humidity
-        s.front_warm = (
-            s.dp_dt < -1.0 and s.dh_dt > 2.0 and ws < -10.0
-        )
+        s.front_warm = s.dp_dt < -1.0 and s.dh_dt > 2.0 and ws < -10.0
 
         # Cold front: pressure trough (accelerating up) + temp drop + veering
-        s.front_cold = (
-            s.d2p_dt2 > 0.5 and s.dt_dt < -1.0 and ws > 15.0
-        )
+        s.front_cold = s.d2p_dt2 > 0.5 and s.dt_dt < -1.0 and ws > 15.0
 
         # Occluded: strong pressure fall + big wind shift + narrow depression
-        s.front_occluded = (
-            s.dp_dt < -2.0 and abs(ws) > 20.0 and s.dew_depression < 2.0
-        )
+        s.front_occluded = s.dp_dt < -2.0 and abs(ws) > 20.0 and s.dew_depression < 2.0
 
     def _wind_shift_rate(self) -> float:
         """Degrees/hour change in wind direction.  Positive = veering (CW)."""
@@ -577,9 +537,7 @@ class StateEstimator:
             return None
         return best
 
-    def _estimate_cloud_fraction(
-        self, sun_elevation_deg: float = 90.0
-    ) -> float:
+    def _estimate_cloud_fraction(self, sun_elevation_deg: float = 90.0) -> float:
         """Blend solar-radiation and dew-depression signals into 0-1 cloud fraction.
 
         Solar path uses Beer-Lambert clear-sky irradiance scaled by sun
@@ -598,7 +556,7 @@ class StateEstimator:
             air_mass = 1.0 / math.sin(el_rad)
             # I_clear = S₀ × τ^(AM^0.678) × sin(α)
             # S₀=1361 W/m², τ=0.72 (typical clear-sky transmittance)
-            clear_sky = 1361.0 * (0.72 ** (air_mass ** 0.678)) * math.sin(el_rad)
+            clear_sky = 1361.0 * (0.72 ** (air_mass**0.678)) * math.sin(el_rad)
             clear_sky = max(50.0, clear_sky)
             ratio = min(1.0, sol / clear_sky)
             solar_cloud = 1.0 - ratio

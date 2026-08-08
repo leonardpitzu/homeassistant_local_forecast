@@ -68,9 +68,7 @@ async def async_setup_entry(
     async_add_entities([LocalForecastWeather(entry.runtime_data, sw_version)])
 
 
-class LocalForecastWeather(
-    CoordinatorEntity[LocalForecastCoordinator], WeatherEntity
-):
+class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherEntity):
     """Bayesian local weather forecast entity."""
 
     _attr_has_entity_name = True
@@ -78,13 +76,9 @@ class LocalForecastWeather(
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_pressure_unit = UnitOfPressure.HPA
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
-    _attr_supported_features = (
-        WeatherEntityFeature.FORECAST_HOURLY | WeatherEntityFeature.FORECAST_DAILY
-    )
+    _attr_supported_features = WeatherEntityFeature.FORECAST_HOURLY | WeatherEntityFeature.FORECAST_DAILY
 
-    def __init__(
-        self, coordinator: LocalForecastCoordinator, sw_version: str | None
-    ) -> None:
+    def __init__(self, coordinator: LocalForecastCoordinator, sw_version: str | None) -> None:
         """Bind the entity to its coordinator and device."""
         super().__init__(coordinator)
         entry_id = coordinator.config_entry.entry_id
@@ -104,9 +98,7 @@ class LocalForecastWeather(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Push both the state and any live forecast subscription."""
-        self.coordinator.config_entry.async_create_task(
-            self.hass, self.async_update_listeners(None), eager_start=False
-        )
+        self.coordinator.config_entry.async_create_task(self.hass, self.async_update_listeners(None), eager_start=False)
         super()._handle_coordinator_update()
 
     # ------------------------------------------------------------------
@@ -168,9 +160,7 @@ class LocalForecastWeather(
         # ask, or every entry drifts by up to one refresh interval.
         return [
             Forecast(  # type: ignore[typeddict-unknown-key]
-                datetime=(
-                    data.generated + timedelta(hours=hf.hours_ahead)
-                ).isoformat(),
+                datetime=(data.generated + timedelta(hours=hf.hours_ahead)).isoformat(),
                 condition=hf.condition,
                 native_temperature=hf.temperature,
                 humidity=hf.humidity,
@@ -223,9 +213,7 @@ class LocalForecastWeather(
                 dt_entry = now.replace(microsecond=0)
             else:
                 day = now.date() + timedelta(days=offset_days)
-                dt_entry = datetime(
-                    day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo
-                )
+                dt_entry = datetime(day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo)
 
             days.append(
                 Forecast(  # type: ignore[typeddict-unknown-key]
@@ -233,19 +221,11 @@ class LocalForecastWeather(
                     condition=condition,
                     native_temperature=round(max(temps), 1),
                     native_templow=round(min(temps), 1),
-                    precipitation_probability=max(
-                        h.precipitation_probability for h in hours
-                    ),
-                    native_precipitation=round(
-                        sum(h.precipitation_amount for h in hours), 1
-                    ),
+                    precipitation_probability=max(h.precipitation_probability for h in hours),
+                    native_precipitation=round(sum(h.precipitation_amount for h in hours), 1),
                     humidity=round(sum(h.humidity for h in hours) / len(hours)),
-                    native_pressure=round(
-                        sum(h.pressure for h in hours) / len(hours), 1
-                    ),
-                    native_wind_speed=round(
-                        sum(h.wind_speed for h in hours) / len(hours), 1
-                    ),
+                    native_pressure=round(sum(h.pressure for h in hours) / len(hours), 1),
+                    native_wind_speed=round(sum(h.wind_speed for h in hours) / len(hours), 1),
                     wind_bearing=round(hours[0].wind_bearing),
                     is_daytime=True,
                 )
@@ -289,23 +269,16 @@ def _extrapolate_day2(
     # Pressure continues the gentle trend; humidity regresses toward the
     # 55% continental mean.
     pressure = round(last.pressure + last.pressure - tomorrow_hours[0].pressure, 1)
-    humidity = round(
-        (sum(h.humidity for h in tomorrow_hours) / len(tomorrow_hours)) * 0.7
-        + 55 * 0.3
-    )
+    humidity = round((sum(h.humidity for h in tomorrow_hours) / len(tomorrow_hours)) * 0.7 + 55 * 0.3)
 
     day = now.date() + timedelta(days=2)
     return Forecast(  # type: ignore[typeddict-unknown-key]
-        datetime=datetime(
-            day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo
-        ).isoformat(),
+        datetime=datetime(day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo).isoformat(),
         condition=condition,
         native_temperature=temp_high,
         native_templow=temp_low,
         precipitation_probability=round(last_precip * 0.7 + 20 * 0.3),
-        native_precipitation=round(
-            sum(h.precipitation_amount for h in tomorrow_hours) * 0.7, 1
-        ),
+        native_precipitation=round(sum(h.precipitation_amount for h in tomorrow_hours) * 0.7, 1),
         humidity=humidity,
         native_pressure=max(920.0, min(1070.0, pressure)),
         native_wind_speed=round(last.wind_speed * 0.8 + 0.5, 1),

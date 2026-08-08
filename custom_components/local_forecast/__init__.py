@@ -18,9 +18,7 @@ from .map import (
 PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: LocalForecastConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: LocalForecastConfigEntry) -> bool:
     """Set up Local Weather Forecast from a config entry."""
     coordinator = LocalForecastCoordinator(hass, entry)
     await coordinator.async_load_pressure_history()
@@ -34,13 +32,9 @@ async def async_setup_entry(
     return True
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: LocalForecastConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: LocalForecastConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(
-        entry, PLATFORMS
-    ):
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         _async_refresh_map_gate(hass, skip_entry_id=entry.entry_id)
     return unload_ok
 
@@ -62,15 +56,11 @@ async def _async_setup_map(hass: HomeAssistant) -> None:
 
 
 @callback
-def _async_refresh_map_gate(
-    hass: HomeAssistant, skip_entry_id: str | None = None
-) -> MapState:
+def _async_refresh_map_gate(hass: HomeAssistant, skip_entry_id: str | None = None) -> MapState:
     """Recompute the map gate from the config entries that remain."""
     state = hass.data.setdefault(DATA_MAP, MapState())
     state.enabled = any(
-        _map_enabled(entry)
-        for entry in hass.config_entries.async_entries(DOMAIN)
-        if entry.entry_id != skip_entry_id
+        _map_enabled(entry) for entry in hass.config_entries.async_entries(DOMAIN) if entry.entry_id != skip_entry_id
     )
     return state
 

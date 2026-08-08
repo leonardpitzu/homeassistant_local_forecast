@@ -67,9 +67,7 @@ def tendency_direction(tendency: float | None) -> str | None:
 FRONT_OPTIONS = ["none", "warm", "cold", "occluded"]
 
 
-def front_state(
-    warm: bool | None, cold: bool | None, occluded: bool | None
-) -> str:
+def front_state(warm: bool | None, cold: bool | None, occluded: bool | None) -> str:
     """Collapse the three frontal flags into one mutually-exclusive state."""
     if occluded:
         return "occluded"

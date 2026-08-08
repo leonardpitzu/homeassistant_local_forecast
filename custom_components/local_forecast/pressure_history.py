@@ -53,26 +53,20 @@ class PressureHistory:
         """Store an hourly sample, ignoring sub-hourly and invalid values."""
         if pressure is None or not math.isfinite(pressure):
             return
-        if self._samples and (
-            timestamp - self._samples[-1][0] < self._interval * 0.9
-        ):
+        if self._samples and (timestamp - self._samples[-1][0] < self._interval * 0.9):
             return
         self._samples.append((timestamp, pressure))
         self._prune(timestamp)
 
     def _prune(self, now_ts: float) -> None:
-        while self._samples and (
-            now_ts - self._samples[0][0] > self._window + self._interval
-        ):
+        while self._samples and (now_ts - self._samples[0][0] > self._window + self._interval):
             self._samples.popleft()
 
     # ------------------------------------------------------------------
     #  Derived quantities
     # ------------------------------------------------------------------
 
-    def tendency_per_hour(
-        self, now_ts: float, current_pressure: float | None
-    ) -> float | None:
+    def tendency_per_hour(self, now_ts: float, current_pressure: float | None) -> float | None:
         """WMO 3-hour tendency as hPa/h, or None during warmup.
 
         Uses the buffered sample nearest to 3 h ago and divides by the
@@ -89,9 +83,7 @@ class PressureHistory:
             return None
         return (current_pressure - ref[1]) / dt_h
 
-    def mean(
-        self, now_ts: float, current_pressure: float | None = None
-    ) -> float | None:
+    def mean(self, now_ts: float, current_pressure: float | None = None) -> float | None:
         """Rolling mean of samples in the 24 h window, or None if empty."""
         values = [p for ts, p in self._samples if now_ts - ts <= self._window]
         if current_pressure is not None and math.isfinite(current_pressure):

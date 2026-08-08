@@ -31,9 +31,19 @@ S2_PHASE_H = 10.0
 # the grid's polar values are sparse-station noise.
 S1_NODE_STEP_DEG = 15.0
 S1_ZONAL_PA: tuple[tuple[float, float], ...] = (
-    (0.00, 0.00), (0.00, 0.00), (25.25, 7.64), (-3.93, -11.95), (-7.56, 19.41),
-    (-12.56, 43.97), (-4.09, 56.07), (-9.25, 44.95), (-18.34, 30.63),
-    (-15.87, 15.46), (0.27, 7.11), (0.00, 0.00), (0.00, 0.00),
+    (0.00, 0.00),
+    (0.00, 0.00),
+    (25.25, 7.64),
+    (-3.93, -11.95),
+    (-7.56, 19.41),
+    (-12.56, 43.97),
+    (-4.09, 56.07),
+    (-9.25, 44.95),
+    (-18.34, 30.63),
+    (-15.87, 15.46),
+    (0.27, 7.11),
+    (0.00, 0.00),
+    (0.00, 0.00),
 )
 S1_DEFAULT_PA = 40.0
 S1_DEFAULT_PHASE_H = 4.8
@@ -77,9 +87,8 @@ def solar_hour(timestamp: float, longitude_deg: float | None) -> float:
 def tide_pa(hour: float, latitude_deg: float | None = None) -> float:
     """Combined S2 + S1 tide in pascals, at a local solar hour."""
     s1_amp, s1_phase = s1_tide(latitude_deg)
-    return (
-        s2_amplitude(latitude_deg) * math.cos(2.0 * math.pi * (hour - S2_PHASE_H) / 12.0)
-        + s1_amp * math.cos(2.0 * math.pi * (hour - s1_phase) / 24.0)
+    return s2_amplitude(latitude_deg) * math.cos(2.0 * math.pi * (hour - S2_PHASE_H) / 12.0) + s1_amp * math.cos(
+        2.0 * math.pi * (hour - s1_phase) / 24.0
     )
 
 

@@ -114,9 +114,7 @@ class LocalForecastSensorEntityDescription(SensorEntityDescription):
     that has been on somebody's dashboard for years.
     """
 
-    value_fn: Callable[
-        [LocalForecastCoordinator, ForecastResult], StateType | datetime
-    ]
+    value_fn: Callable[[LocalForecastCoordinator, ForecastResult], StateType | datetime]
     icon_fn: Callable[[ForecastResult], str] | None = None
     attributes_fn: Callable[[ForecastResult], dict[str, Any]] | None = None
 
@@ -128,9 +126,7 @@ SENSORS: tuple[LocalForecastSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda _c, d: d.attributes.get("precip_probability_6h"),
-        icon_fn=lambda d: _precip_icon(
-            d.attributes.get("wet_bulb"), d.attributes.get("precip_probability_6h")
-        ),
+        icon_fn=lambda d: _precip_icon(d.attributes.get("wet_bulb"), d.attributes.get("precip_probability_6h")),
     ),
     LocalForecastSensorEntityDescription(
         key="next_hour_condition",
@@ -222,14 +218,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up Local Weather Forecast sensor entities."""
     coordinator = entry.runtime_data
-    async_add_entities(
-        LocalForecastSensor(coordinator, description) for description in SENSORS
-    )
+    async_add_entities(LocalForecastSensor(coordinator, description) for description in SENSORS)
 
 
-class LocalForecastSensor(
-    CoordinatorEntity[LocalForecastCoordinator], SensorEntity
-):
+class LocalForecastSensor(CoordinatorEntity[LocalForecastCoordinator], SensorEntity):
     """A single value taken from the latest forecast run."""
 
     _attr_has_entity_name = True

@@ -17,6 +17,7 @@ import math
 #  Pressure Model — damped linear extrapolation
 # ---------------------------------------------------------------------------
 
+
 class PressureModel:
     """Predict sea-level pressure with exponentially damped trend.
 
@@ -42,7 +43,7 @@ class PressureModel:
         if self.damping >= 1.0 or self.damping <= 0.0:
             total = self.dp_dt * hours_ahead
         else:
-            total = self.dp_dt * (1 - self.damping ** hours_ahead) / (1 - self.damping)
+            total = self.dp_dt * (1 - self.damping**hours_ahead) / (1 - self.damping)
         return max(920.0, min(1070.0, self.current + total))
 
 
@@ -63,6 +64,7 @@ class PressureModel:
 #  The model is evaluated as a correction on top of the current
 #  observed temperature, so absolute calibration errors cancel out.
 # ---------------------------------------------------------------------------
+
 
 class TemperatureModel:
     """Predict temperature via energy balance + diurnal forcing.
@@ -86,7 +88,7 @@ class TemperatureModel:
         self.dt_dt = dt_dt
         self.humidity = humidity
         self.wind = wind_speed
-        self.cloud = cloud_fraction      # 0-1
+        self.cloud = cloud_fraction  # 0-1
         self.sunrise = sunrise_hour
         self.sunset = sunset_hour
         self.hour0 = current_hour
@@ -181,6 +183,7 @@ class TemperatureModel:
 #  Wind Model — persistence + regression to the climatological mean
 # ---------------------------------------------------------------------------
 
+
 class WindModel:
     """Predict wind speed and bearing with persistence + regression to mean.
 
@@ -246,6 +249,7 @@ class WindModel:
 #  or removed).  Precipitation removes moisture; the Bayesian layer
 #  handles that probabilistically.
 # ---------------------------------------------------------------------------
+
 
 class HumidityModel:
     """Predict RH from temperature change via Clausius-Clapeyron."""

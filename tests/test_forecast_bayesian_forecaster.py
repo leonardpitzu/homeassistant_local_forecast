@@ -23,13 +23,24 @@ from local_forecast.state_estimator import SmoothedState
 
 
 def _smoothed(
-    pressure=1013.0, temperature=20.0, humidity=50.0,
-    wind_speed=3.0, wind_direction=180.0,
-    dp_dt=0.0, d2p_dt2=0.0, dt_dt=0.0, dh_dt=0.0,
-    dew_point=10.0, dew_depression=10.0, wet_bulb=15.0,
+    pressure=1013.0,
+    temperature=20.0,
+    humidity=50.0,
+    wind_speed=3.0,
+    wind_direction=180.0,
+    dp_dt=0.0,
+    d2p_dt2=0.0,
+    dt_dt=0.0,
+    dh_dt=0.0,
+    dew_point=10.0,
+    dew_depression=10.0,
+    wet_bulb=15.0,
     is_night=False,
-    front_warm=False, front_cold=False, front_occluded=False,
-    rain_rate=0.0, solar=0.0,
+    front_warm=False,
+    front_cold=False,
+    front_occluded=False,
+    rain_rate=0.0,
+    solar=0.0,
     dd_trend=0.0,
 ):
     """Build a SmoothedState with sensible defaults."""
@@ -160,8 +171,11 @@ class TestSnowConstraint:
         result = fc.forecast(
             current_state_idx=S_SNOWY,
             smoothed=_smoothed(
-                temperature=-5.0, humidity=85.0, wet_bulb=-7.0,
-                dp_dt=-0.5, rain_rate=2.0,
+                temperature=-5.0,
+                humidity=85.0,
+                wet_bulb=-7.0,
+                dp_dt=-0.5,
+                rain_rate=2.0,
             ),
             predict_temperature=lambda h: -5.0,
         )
@@ -178,7 +192,9 @@ class TestPrecipitationProbability:
         result = fc.forecast(
             current_state_idx=S_CLEAR,
             smoothed=_smoothed(
-                pressure=1025.0, humidity=30.0, dp_dt=0.5,
+                pressure=1025.0,
+                humidity=30.0,
+                dp_dt=0.5,
             ),
         )
         # First hour from clear sky: very low precip probability
@@ -189,7 +205,9 @@ class TestPrecipitationProbability:
         result = fc.forecast(
             current_state_idx=S_RAINY,
             smoothed=_smoothed(
-                humidity=90.0, dp_dt=-1.5, rain_rate=3.0,
+                humidity=90.0,
+                dp_dt=-1.5,
+                rain_rate=3.0,
             ),
         )
         assert result[0].precipitation_probability > 40
@@ -241,7 +259,9 @@ class TestFrontalEvidence:
         r_front = fc.forecast(
             current_state_idx=S_CLOUDY,
             smoothed=_smoothed(
-                dp_dt=-1.0, humidity=75.0, front_warm=True,
+                dp_dt=-1.0,
+                humidity=75.0,
+                front_warm=True,
             ),
         )
         # Warm front should increase precip probability
@@ -254,9 +274,12 @@ class TestFrontalEvidence:
         result = fc.forecast(
             current_state_idx=S_CLOUDY,
             smoothed=_smoothed(
-                dp_dt=-2.0, d2p_dt2=-0.8,
-                dt_dt=-1.5, front_cold=True,
-                humidity=70.0, wind_speed=8.0,
+                dp_dt=-2.0,
+                d2p_dt2=-0.8,
+                dt_dt=-1.5,
+                front_cold=True,
+                humidity=70.0,
+                wind_speed=8.0,
             ),
         )
         # Cold front with strong signals should produce some precip probability

@@ -30,9 +30,7 @@ def sources(hass: HomeAssistant):
 
 
 async def test_user_flow_creates_an_entry(hass: HomeAssistant):
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     assert result["type"] is FlowResultType.FORM
 
     result = await hass.config_entries.flow.async_configure(
@@ -60,9 +58,7 @@ async def test_user_flow_creates_an_entry(hass: HomeAssistant):
     ],
 )
 async def test_user_flow_rejects_bad_input(hass: HomeAssistant, overrides, field):
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {

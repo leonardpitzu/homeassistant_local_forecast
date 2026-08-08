@@ -41,9 +41,18 @@ class TestConstants:
 
     def test_state_indices_unique(self):
         indices = [
-            S_CLEAR, S_CLEAR_NIGHT, S_PARTLY_CLOUDY, S_CLOUDY,
-            S_FOG, S_RAINY, S_POURING, S_SNOWY, S_SNOWY_RAINY,
-            S_LIGHTNING_RAINY, S_WINDY, S_EXCEPTIONAL,
+            S_CLEAR,
+            S_CLEAR_NIGHT,
+            S_PARTLY_CLOUDY,
+            S_CLOUDY,
+            S_FOG,
+            S_RAINY,
+            S_POURING,
+            S_SNOWY,
+            S_SNOWY_RAINY,
+            S_LIGHTNING_RAINY,
+            S_WINDY,
+            S_EXCEPTIONAL,
         ]
         assert len(set(indices)) == NUM_STATES
         assert set(indices) == set(range(NUM_STATES))
@@ -51,9 +60,18 @@ class TestConstants:
     def test_ha_conditions_are_valid_strings(self):
         """Every condition must be a recognized HA weather condition."""
         valid = {
-            "sunny", "clear-night", "partlycloudy", "cloudy", "fog",
-            "rainy", "pouring", "snowy", "snowy-rainy",
-            "lightning-rainy", "windy", "exceptional",
+            "sunny",
+            "clear-night",
+            "partlycloudy",
+            "cloudy",
+            "fog",
+            "rainy",
+            "pouring",
+            "snowy",
+            "snowy-rainy",
+            "lightning-rainy",
+            "windy",
+            "exceptional",
         }
         assert set(HA_CONDITIONS) == valid
 

@@ -68,16 +68,12 @@ class TestTideMagnitude:
     def test_slope_can_rival_the_steady_threshold(self) -> None:
         """The reason this module exists: the tide alone reaches the 0.3 hPa/h dead zone."""
         worst = max(
-            abs(tide_pa((h + 1) / 60.0, BRASOV_LAT) - tide_pa(h / 60.0, BRASOV_LAT)) * 60.0
-            for h in range(24 * 60)
+            abs(tide_pa((h + 1) / 60.0, BRASOV_LAT) - tide_pa(h / 60.0, BRASOV_LAT)) * 60.0 for h in range(24 * 60)
         )
         assert worst / 100.0 > 0.25  # hPa/h
 
     def test_tropics_exceed_it_outright(self) -> None:
-        worst = max(
-            abs(tide_pa((h + 1) / 60.0, 0.0) - tide_pa(h / 60.0, 0.0)) * 60.0
-            for h in range(24 * 60)
-        )
+        worst = max(abs(tide_pa((h + 1) / 60.0, 0.0) - tide_pa(h / 60.0, 0.0)) * 60.0 for h in range(24 * 60))
         assert worst / 100.0 > 0.5
 
 
@@ -90,9 +86,7 @@ def _feed(est: StateEstimator, *, hours: float, rate_hpa_h: float, with_tide: bo
         p = 1013.0 + rate_hpa_h * (i * 120.0) / 3600.0
         if with_tide:
             p += tide_pa(solar_hour(t, lon), lat) / 100.0
-        est.update(
-            SensorReading(timestamp=t, pressure_hpa=p, temperature_c=15.0, humidity_pct=60.0)
-        )
+        est.update(SensorReading(timestamp=t, pressure_hpa=p, temperature_c=15.0, humidity_pct=60.0))
 
 
 class TestTendencyIsDetided:
