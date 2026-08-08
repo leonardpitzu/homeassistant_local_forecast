@@ -1,6 +1,7 @@
 {
   "domain": "local_forecast",
   "name": "Local Weather Forecast",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@leonardpitzu"],
   "config_flow": true,
   "dependencies": ["http"],
