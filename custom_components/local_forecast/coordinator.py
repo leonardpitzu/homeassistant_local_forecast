@@ -151,7 +151,10 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         # optional sensors the user has just cleared.
         self._config: dict[str, Any] = dict(entry.options or entry.data)
 
-        self._estimator = StateEstimator()
+        self._estimator = StateEstimator(
+            latitude=hass.config.latitude,
+            longitude=hass.config.longitude,
+        )
         self._forecaster = BayesianForecaster()
         self._has_data = False
 

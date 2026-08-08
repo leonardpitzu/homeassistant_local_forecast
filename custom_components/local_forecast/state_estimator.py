@@ -41,6 +41,7 @@ from .const import (
     WET_BULB_SNOW,
     WIND_STRONG,
 )
+from .tide import tide_hpa_at
 
 # ---------------------------------------------------------------------------
 #  Data containers
@@ -167,9 +168,13 @@ class StateEstimator:
         *,
         history_size: int = HISTORY_MAX_RECORDS,
         history_seconds: float = HISTORY_SECONDS,
+        latitude: float | None = None,
+        longitude: float | None = None,
     ) -> None:
         self._history: deque[SensorReading] = deque(maxlen=history_size)
         self._history_seconds = history_seconds
+        self._latitude = latitude
+        self._longitude = longitude
         self._kf: dict[str, _KalmanChannel] = {
             "pressure":    _KalmanChannel(q=0.005, r=0.15),
             "temperature": _KalmanChannel(q=0.02,  r=0.3),
@@ -437,7 +442,7 @@ class StateEstimator:
         if len(window) >= 2 and (t_now - window[0].timestamp) >= 300.0:
             w_times = [(r.timestamp - t_now) / 3600.0 for r in window]
             self._state.dp_dt = self._slope(
-                w_times, [r.pressure_hpa for r in window]
+                w_times, [self._detided(r) for r in window]
             )
             self._state.dt_dt = self._slope(
                 w_times, [r.temperature_c for r in window]
@@ -464,9 +469,20 @@ class StateEstimator:
             t1 = (ref_mid.timestamp - t_now) / 3600.0
             span_recent, span_old = -t1, t1 - t0
             if span_recent > 0.1 and span_old > 0.1:
-                s_recent = (now.pressure_hpa - ref_mid.pressure_hpa) / span_recent
-                s_old = (ref_mid.pressure_hpa - ref_old.pressure_hpa) / span_old
+                s_recent = (self._detided(now) - self._detided(ref_mid)) / span_recent
+                s_old = (self._detided(ref_mid) - self._detided(ref_old)) / span_old
                 self._state.d2p_dt2 = 2.0 * (s_recent - s_old) / (-t0)
+
+    def _detided(self, reading: SensorReading) -> float:
+        """Pressure with the solar tide removed, for trend fitting only.
+
+        The reported pressure keeps its tide: that is what the barometer actually
+        reads. Only the tendency needs it gone, and there the tide is not a small
+        correction — its own slope rivals the steady/moving threshold.
+        """
+        return reading.pressure_hpa - tide_hpa_at(
+            reading.timestamp, self._latitude, self._longitude
+        )
 
     @staticmethod
     def _slope(times_h: list[float], values: list[float]) -> float:
