@@ -1,11 +1,16 @@
 """Tests for the atmospheric tide model and its effect on the pressure tendency."""
 
-from __future__ import annotations
-
 import math
+import os
+import sys
 
-from custom_components.local_forecast.state_estimator import SensorReading, StateEstimator
-from custom_components.local_forecast.tide import (
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(__file__), "..", "custom_components"),
+)
+
+from local_forecast.state_estimator import SensorReading, StateEstimator
+from local_forecast.tide import (
     S2_AMP_EQUATOR_PA,
     s1_tide,
     s2_amplitude,
