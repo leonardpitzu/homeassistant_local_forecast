@@ -330,23 +330,28 @@ class LocalForecastWeather(WeatherEntity):
         }
         pressures = series.get(CONF_PRESSURE_SENSOR, [])
         temps = series.get(CONF_TEMPERATURE_SENSOR, [])
+        humidities = series.get(CONF_HUMIDITY_SENSOR, [])
         if len(pressures) < 3 or not temps:
             return
 
+        # All three series are sorted, so walk them together: rescanning each
+        # one per pressure sample is quadratic, and a chatty station easily
+        # puts thousands of samples in a four-hour window.
         count = 0
+        temp_cur = hum_cur = 0
         for ts, value in pressures:
-            temp = self._latest_before(temps, ts)
+            temp_cur, temp = self._align(temps, temp_cur, ts)
             if temp is None:
                 continue
-            reading = SensorReading(
-                timestamp=ts,
-                pressure_hpa=self._to_sea_level(value, temp),
-                temperature_c=temp,
-                humidity_pct=self._latest_before(
-                    series.get(CONF_HUMIDITY_SENSOR, []), ts
-                ),
+            hum_cur, humidity = self._align(humidities, hum_cur, ts)
+            self._estimator.update(
+                SensorReading(
+                    timestamp=ts,
+                    pressure_hpa=self._to_sea_level(value, temp),
+                    temperature_c=temp,
+                    humidity_pct=humidity,
+                )
             )
-            self._estimator.update(reading)
             count += 1
         if count:
             self._has_data = True
@@ -365,16 +370,17 @@ class LocalForecastWeather(WeatherEntity):
         return out
 
     @staticmethod
-    def _latest_before(
-        series: list[tuple[float, float]], ts: float
-    ) -> float | None:
-        """Most recent value in ``series`` at or before ``ts``."""
-        best: float | None = None
-        for sample_ts, value in series:
-            if sample_ts > ts:
-                break
-            best = value
-        return best
+    def _align(
+        series: list[tuple[float, float]], cursor: int, ts: float
+    ) -> tuple[int, float | None]:
+        """Advance ``cursor`` to the last sample at or before ``ts``.
+
+        Callers must query with non-decreasing ``ts``; the cursor only ever
+        moves forward, so a whole merge costs one pass.
+        """
+        while cursor < len(series) and series[cursor][0] <= ts:
+            cursor += 1
+        return cursor, series[cursor - 1][1] if cursor else None
 
     # ------------------------------------------------------------------
     #  Sensor ingestion

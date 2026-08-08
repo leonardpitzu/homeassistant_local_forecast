@@ -262,11 +262,11 @@ Physical impossibilities are zeroed out:
 |---|---|---|
 | `pressure_trend` | float | $dp/dt$ in hPa/h |
 | `pressure_acceleration` | float | $d^2p/dt^2$ in hPa/h squared |
-| `dew_point` | float | Degrees C |
-| `dew_depression` | float | $T - T_d$ in C |
-| `wet_bulb` | float | Degrees C |
-| `wind_force` | int | Beaufort number (0-12) |
-| `wind_force_description` | str | Beaufort name (e.g. "Gentle breeze") |
+| `dew_point` | float | Degrees C (only with a humidity sensor) |
+| `dew_depression` | float | $T - T_d$ in C (only with a humidity sensor) |
+| `wet_bulb` | float | Degrees C (only with a humidity sensor) |
+| `wind_force` | int | Beaufort number (0-12) (only with a wind-speed sensor) |
+| `wind_force_description` | str | Beaufort name, e.g. "Gentle breeze" (only with a wind-speed sensor) |
 | `front_warm` | bool | Warm front detected (also surfaced as the `front` enum sensor) |
 | `front_cold` | bool | Cold front detected (also surfaced as the `front` enum sensor) |
 | `front_occluded` | bool | Occluded front detected (also surfaced as the `front` enum sensor) |
@@ -274,10 +274,13 @@ Physical impossibilities are zeroed out:
 | `next_hour_precip_probability` | int | 0-100 for hour +1 |
 | `precip_probability_6h` | int | Max hourly rain probability over next 6h |
 
+Attributes derived from an optional sensor are omitted entirely when that
+sensor is not configured, rather than published from a placeholder value.
+
 Standard weather entity properties are also available:
 `temperature`, `apparent_temperature`, `dew_point`, `humidity`,
 `pressure`, `wind_speed`, `wind_bearing`, hourly forecast (12h),
-daily forecast (today + tomorrow).
+daily forecast (today, tomorrow and the day after).
 
 </details>
 
@@ -344,10 +347,15 @@ all.
 When enabled, the integration serves a Leaflet viewer at
 `/api/local_forecast/map`. Your browser tiles EUMETSAT's public
 [EUMETView](https://view.eumetsat.int/) WMS endpoint directly - there are **no
-extra entities, no polling, and no API key**. The view opens centred on your
-Home Assistant home location (read live, so moving home in HA settings
-recentres the map) and offers a layer switcher for Geo Colour, Natural Colour,
-Dust, Airmass, Convection, Volcanic Ash, and Fog / Low Clouds.
+extra entities, no polling, and no API key**. Leaflet itself is bundled with
+the integration, so nothing is fetched from a third-party CDN. The view offers
+a layer switcher for Geo Colour, Natural Colour, Dust, Airmass, Convection,
+Volcanic Ash, and Fog / Low Clouds.
+
+The endpoint is reachable without authentication, because an `iframe` card
+cannot present a token. It therefore centres on a coarse grid near your home
+location rather than the exact coordinates, so the page cannot be used to
+locate your house.
 
 Add it to a dashboard with an `iframe` card:
 
@@ -673,8 +681,11 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 **Forecast does not update**
 
-- Entity updates on sensor state changes (throttled to 30s)
+- Entity updates on sensor state changes (throttled to 30s, and never delayed
+  more than 120s), plus a refresh every 5 minutes
 - Check that sensor entities are not `unavailable` or `unknown`
+- The weather entity stays `unavailable` until at least one valid reading has
+  been ingested - it will not publish placeholder values
 
 **Temperature seems off**
 
@@ -688,10 +699,13 @@ Adjust `lifetime`, `screen_time`, and RGB values to taste.
 
 **Sensor values rejected**
 
-- Pressure outside 870-1090 hPa after unit conversion is rejected (returns unavailable)
+- Pressure is validated *after* reduction to sea level, so high-altitude
+  stations work: the station reading may be well below 870 hPa as long as the
+  resulting QNH lands in 870-1090 hPa
 - Temperature outside -60 to 60 C after conversion is rejected
 - Humidity is clamped to 0-100%, wind speed to 0-60 m/s
-- Check `unit_of_measurement` attribute on your sensor entities - the integration relies on it for auto-conversion
+- Check `unit_of_measurement` attribute on your sensor entities - unit
+  conversion is handled by Home Assistant's own converters and relies on it
 
 </details>
 
