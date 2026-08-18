@@ -161,10 +161,35 @@ MAP_STATIC_URL: Final = "/local_forecast_static"
 MAP_DEFAULT_ZOOM: Final = 6
 MAP_MAX_ZOOM: Final = 9
 
+# EUMETView renders every tile live — ~0.5 s whatever its size — over HTTP/1.1
+# (six connections, no multiplexing) and throttles at 20 requests/s. So what a
+# viewport costs is the number of requests, not the pixels: measured over
+# Romania at zoom 6, Leaflet's 256 px grid takes 30 requests and 3.0 s where
+# 512 px tiles take 12 and 1.0 s. Requested at one image pixel per screen
+# pixel, because the imagery is coarser than the screen either way.
+MAP_TILE_SIZE: Final = 512
+
+# Past this zoom Leaflet upscales the tiles it already has instead of asking
+# for four times as many per level. Zoom 7 is ~0.9 km per screen pixel over
+# Romania, already finer than SEVIRI samples the disc, so the extra requests
+# would only enlarge pixels the satellite never resolved.
+MAP_MAX_NATIVE_ZOOM: Final = 7
+
+# GeoServer resamples with nearest-neighbour unless told otherwise, which turns
+# every zoom past the sensor's own sampling into visible blocks. Bicubic costs
+# roughly twice the bytes and render time per tile and is what stops the view
+# looking pixelated; it applies to the layer named in the same position as in
+# `layers`, so one value serves our one-layer-per-request tiles.
+MAP_INTERPOLATION: Final = "Bicubic"
+
 # The viewer is reachable without authentication (an `iframe` card cannot
 # present a token), so the centre is snapped to this grid — enough to frame
 # the right region at zoom 6, not enough to locate a house.
 MAP_CENTER_GRID: Final = 0.25
+
+# Metres in a degree of latitude, for sizing the home ring. Rounded: the ring
+# marks a region tens of kilometres across, so metre-level exactness is noise.
+MAP_DEGREE_METRES: Final = 111_320
 
 # Fallback centre when Home Assistant has no home location configured
 # (central Europe). Normally hass.config.latitude/longitude is used live.

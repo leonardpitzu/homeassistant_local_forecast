@@ -355,7 +355,10 @@ Volcanic Ash, and Fog / Low Clouds.
 The endpoint is reachable without authentication, because an `iframe` card
 cannot present a token. It therefore centres on a coarse grid near your home
 location rather than the exact coordinates, so the page cannot be used to
-locate your house.
+locate your house. A red ring marks that area: it is drawn wide enough to
+contain your home wherever the grid moved the centre to, and it sits above
+every layer, so you keep a reference point when the ground below is completely
+clouded over.
 
 Add it to a dashboard with an `iframe` card:
 

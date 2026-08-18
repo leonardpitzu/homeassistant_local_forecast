@@ -7,6 +7,7 @@ instance and assert on the published states.
 
 from __future__ import annotations
 
+import math
 import sys
 from types import ModuleType
 from unittest.mock import patch
@@ -26,9 +27,12 @@ from local_forecast.const import (
     CONF_WIND_DIRECTION_SENSOR,
     CONF_WIND_SPEED_SENSOR,
     DOMAIN,
+    MAP_CENTER_GRID,
+    MAP_DEGREE_METRES,
     MAP_TIME_CACHE_TTL,
     PRESSURE_ABSOLUTE,
 )
+from local_forecast.map import _ring_radius
 
 WEATHER = "weather.local_weather_forecast"
 
@@ -306,10 +310,26 @@ async def test_map_endpoint_is_gated_and_coarse(hass, sensors, hass_client_no_au
     assert "25.5887" not in body
     assert "unpkg.com" not in body
     assert "/local_forecast_static/leaflet.js" in body
+    assert f'"ringRadius": {_ring_radius(45.75)}' in body
 
     asset = await client.get("/local_forecast_static/leaflet.js")
     assert asset.status == 200
     assert "Leaflet" in await asset.text()
+
+
+@pytest.mark.parametrize("latitude,longitude", [(45.6431, 25.5887), (44.4268, 26.1025), (0.02, 0.02)])
+def test_home_ring_encloses_the_home_the_snapping_hid(latitude, longitude):
+    """Snapping moves the centre off the house; the ring must still contain it.
+
+    Otherwise the marker would point at open country next to where you live,
+    which is worse than no marker at all.
+    """
+    snapped_lat = round(latitude / MAP_CENTER_GRID) * MAP_CENTER_GRID
+    snapped_lon = round(longitude / MAP_CENTER_GRID) * MAP_CENTER_GRID
+    north = (latitude - snapped_lat) * MAP_DEGREE_METRES
+    east = (longitude - snapped_lon) * MAP_DEGREE_METRES * math.cos(math.radians(latitude))
+
+    assert math.hypot(north, east) <= _ring_radius(snapped_lat)
 
 
 async def test_map_times_endpoint_serves_and_caches_frame_times(hass, sensors, hass_client_no_auth):

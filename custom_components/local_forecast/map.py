@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import json
+import math
 from pathlib import Path
 
 from aiohttp import web
@@ -30,10 +31,14 @@ from .const import (
     DATA_MAP,
     MAP_CENTER_GRID,
     MAP_DEFAULT_ZOOM,
+    MAP_DEGREE_METRES,
     MAP_FALLBACK_CENTER,
+    MAP_INTERPOLATION,
     MAP_LAYERS,
+    MAP_MAX_NATIVE_ZOOM,
     MAP_MAX_ZOOM,
     MAP_STATIC_URL,
+    MAP_TILE_SIZE,
     MAP_TIME_REFRESH_MS,
     MAP_TIMES_URL,
     MAP_VIEW_URL,
@@ -43,6 +48,21 @@ from .const import (
 from .wms_time import async_get_frame_times, cached_frame_times
 
 LEAFLET_DIR = Path(__file__).parent / "leaflet"
+
+
+def _ring_radius(latitude: float) -> int:
+    """Metres from the snapped centre to the furthest point home could be.
+
+    Sizing the ring to the snapping grid makes it an honest statement of what
+    the page knows: home is somewhere inside it, and nowhere more precise is
+    on offer. Derived from the *snapped* latitude, so the radius itself cannot
+    be solved back into a finer position than the centre already gives.
+    """
+    half = MAP_CENTER_GRID / 2
+    north = half * MAP_DEGREE_METRES
+    # Measured at the cell edge nearer the equator, where it is at its widest.
+    east = north * math.cos(math.radians(max(abs(latitude) - half, 0.0)))
+    return round(math.hypot(north, east))
 
 
 @dataclass(slots=True)
@@ -110,8 +130,12 @@ class LocalForecastMapView(HomeAssistantView):
                 "version": WMS_VERSION,
                 "layers": [{"id": lid, "name": name} for lid, name in MAP_LAYERS],
                 "center": center,
+                "ringRadius": _ring_radius(center[0]),
                 "zoom": MAP_DEFAULT_ZOOM,
                 "maxZoom": MAP_MAX_ZOOM,
+                "maxNativeZoom": MAP_MAX_NATIVE_ZOOM,
+                "tileSize": MAP_TILE_SIZE,
+                "interpolation": MAP_INTERPOLATION,
                 "static": MAP_STATIC_URL,
                 "times": times,
                 "timesUrl": MAP_TIMES_URL,
@@ -186,8 +210,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       format: 'image/png',
       transparent: false,
       version: cfg.version,
-      detectRetina: true,
+      interpolations: cfg.interpolation,
+      tileSize: cfg.tileSize,
       maxZoom: cfg.maxZoom,
+      maxNativeZoom: cfg.maxNativeZoom,
+      // EUMETView throttles by request count, so do not fire a burst of tiles
+      // at every frame of a drag; ask once the map has come to rest.
+      updateWhenIdle: true,
     };
     // Pinning TIME gives every frame its own URL, so a cached tile can never
     // masquerade as the current one. Omitted when the timeline is unknown,
@@ -201,6 +230,16 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   });
   L.control.layers(baseLayers, null, { collapsed: false }).addTo(map);
   map.on('baselayerchange', (e) => { active = e.layer; showStamp(); });
+
+  // Drawn in the overlay pane, so it stays above whichever imagery is on and
+  // gives a fixed reference when the ground below is completely clouded over.
+  L.circle(cfg.center, {
+    radius: cfg.ringRadius,
+    color: '#ff3b30',
+    weight: 2,
+    fill: false,
+    interactive: false,
+  }).addTo(map);
 
   function showStamp() {
     const t = active && active.wmsParams.time;
