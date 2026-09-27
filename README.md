@@ -17,7 +17,8 @@ Seasons, time of day, and conditions all matter.
 | Daily forecast | Today + tomorrow + day after tomorrow aggregated from hourly |
 | Frontal detection | Warm, cold, occluded - exposed as a single `front` enum sensor |
 | Precipitation typing | Wet-bulb temperature: rain vs sleet vs snow |
-| Pressure suite | Sea-level pressure, WMO 3-hour tendency (+ direction enum), 24-hour synoptic mean, and a tendency-aware barometer enum - all standalone sensors |
+| Pressure suite | Sea-level pressure, 3-hour tendency with the atmospheric tide removed (+ direction enum), 24-hour synoptic mean, and a tendency-aware barometer enum - all standalone sensors |
+| Learned atmospheric tide | The daily pressure waves are learned at your station from its own barometer and thermometer - no location tuning, adapts to seasons and to a move |
 | Meteogram feed | Hourly-forecast sensor carrying the full 12h list as an attribute for chart cards - no MQTT publish/discovery workaround needed |
 | Energy-balance temperature | Diurnal cycle, radiative cooling, thermal inertia |
 | Clausius-Clapeyron humidity | Conservation of mixing ratio as temperature changes |
@@ -34,13 +35,16 @@ Seasons, time of day, and conditions all matter.
 
 | Module | Purpose |
 |---|---|
+| `coordinator.py` | Runs the pipeline: reads and unit-converts the sensors, recorder backfill at startup, estimator + forecaster, persisted pressure buffer; publishes one immutable result per run |
 | `state_estimator.py` | Sensor fusion, Kalman smoothing, trend computation, frontal detection, weather classification, signal smoothing (rain persistence, cloud hysteresis, post-rain cloud memory) |
+| `tide.py` | Atmospheric tide (S1 + S2 + S3) learned at the station; removed from every pressure trend, added back to the forecast |
 | `bayesian_forecaster.py` | Markov transition matrix + Bayesian evidence updates, hourly probability vectors |
 | `physics_models.py` | Energy-balance temperature, Clausius-Clapeyron humidity, damped pressure extrapolation |
-| `weather.py` | HA WeatherEntity - reads sensors, runs pipeline, serves forecasts and attributes |
+| `weather.py` | HA WeatherEntity - renders the coordinator's result as condition, attributes and hourly / daily forecasts |
 | `sensor.py` | Standalone sensor entities - precipitation, forecast condition, sea-level pressure, tendency (+ direction enum), synoptic mean, barometer enum, hourly-forecast meteogram feed, and the `front` enum |
 | `pressure_history.py` | Hourly sea-level-pressure ring buffer (24h window), persisted across restarts; feeds the tendency, synoptic-mean, and barometer sensors |
 | `classifiers.py` | Pure display-state classifiers - barometer category, pressure-tendency direction, and frontal identity (no HA dependency) |
+| `map.py`, `wms_time.py` | Optional satellite viewer and the EUMETView frame-time cache behind it |
 
 ```
  Sensors                 State Estimator              Bayesian Forecaster
@@ -63,7 +67,8 @@ Seasons, time of day, and conditions all matter.
                                                     +-------------------------------+
 ```
 
-All modules except `weather.py` are pure Python with no HA dependencies.
+`state_estimator.py`, `tide.py`, `bayesian_forecaster.py`, `physics_models.py`,
+`pressure_history.py` and `classifiers.py` are pure Python with no HA dependencies.
 
 ---
 
@@ -114,25 +119,79 @@ are rejected before they reach the filter, so the seed is never junk.
 
 ### Pressure trends
 
-First derivative (tendency):
+First derivative (tendency) - the least-squares slope over the last hour,
+fitted after removing the atmospheric tide (see below):
 
-$$\frac{dp}{dt} = \frac{p_{\text{now}} - p_{3\text{h ago}}}{3} \quad [\text{hPa/h}]$$
+$$\frac{dp}{dt} = \operatorname{slope}_{1\,\text{h}}\left(p - p_{\text{tide}}\right) \quad [\text{hPa/h}]$$
 
-Second derivative (acceleration - detects approaching fronts):
+Second derivative (acceleration - detects approaching fronts), from the two
+secant slopes $s_{\text{recent}}$ (1.5 h ago to now) and $s_{\text{old}}$
+(3 h ago to 1.5 h ago):
 
-$$\frac{d^2p}{dt^2} = \frac{(dp/dt)_{\text{now}} - (dp/dt)_{1\text{h ago}}}{1} \quad [\text{hPa/h}^2]$$
+$$\frac{d^2p}{dt^2} \approx \frac{2\,(s_{\text{recent}} - s_{\text{old}})}{3\,\text{h}} \quad [\text{hPa/h}^2]$$
+
+Temperature, humidity and dew-depression trends use the same one-hour fit.
 
 A negative $d^2p/dt^2$ with falling pressure signals an accelerating
 low - the Bayesian layer increases weight on precipitation states.
 
+### Atmospheric tide
+
+Pressure rises and falls every day with no weather behind it, and left in,
+those slopes read as a tendency:
+
+| Wave | Cause | Behaviour |
+|---|---|---|
+| S1 (24 h) | Surface heating | Local and seasonal: 0.15 hPa in December, ~1 hPa in summer at a Brasov station; peaks before sunrise |
+| S2 (12 h) | Global solar tide | $\approx 1.16\cos^3\varphi$ hPa, peaks near 10:00 and 22:00 solar time |
+| S3 (8 h) | Shape of the day | Long winter nights make the daily cycle non-sinusoidal |
+
+Nothing is tuned to a place - the model learns the station it runs on:
+
+- **S1 follows the thermometer**: it is the station's own daily temperature
+  cycle (3-day memory) times a site gain (14-day memory).  Season, day length,
+  cloud and climate arrive through the temperature; the gain captures the
+  topography (basin, plain, coast).
+- **S2 and S3** start from Haurwitz's law and zero, and are refined with the
+  same 14-day memory.
+- Fits run on 3-hour changes, which weather does not bias toward any hour,
+  and shrink toward a world-average prior, so a new install or a move starts
+  sensible and adapts on its own.  Time is local solar time from longitude.
+
+Scored hour by hour on 6.2 years of data from three stations (each hour is
+predicted before the model may learn from it), the daily cycle left in the
+3-hour tendency, averaged per calendar month:
+
+| Tide model | Leak (hPa/h) |
+|---|---|
+| None | 0.183 |
+| Fixed climatology | 0.104 |
+| Learned, fixed-shape S1 + S2 | 0.055 |
+| **Learned, temperature-driven S1 + S2 + S3** | **0.029** |
+
+The same fit also learns much of a barometer's own thermal fault: over the
+spring one of those stations' sensors was failing with a fake 3 hPa daily
+swing, it cut the daily cycle left in the tendency from 0.68 to 0.15 hPa/h
+(those months are excluded from the table above).
+
+The tide is removed from every trend (1-hour slope, acceleration, 3-hour
+tendency) and added back to the forecast pressure.  The pressure shown on
+the dashboard keeps it - that is what a barometer reads.  The learned state
+is persisted with the pressure buffer and is visible in the integration's
+diagnostics download.
+
 ### QFE to QNH conversion
 
 If your station reports absolute pressure (QFE), the integration
-converts to sea-level equivalent (QNH) using the barometric formula:
+converts it to QNH through the ICAO standard atmosphere, exactly as airports do:
 
-$$P_{\text{QNH}} = P_{\text{QFE}} \left(1 - \frac{L \cdot h}{T + 273.15}\right)^{-5.257}$$
+$$P_{\text{QNH}} = P_{\text{QFE}} \left(1 - \frac{L \cdot h}{288.15}\right)^{-5.257}$$
 
 where $L = 0.0065$ K/m (ISA lapse rate) and $h$ is station elevation in metres.
+The live temperature is deliberately left out: at 544 m it would add
+0.24 hPa per degree, a fake ~3 hPa daily swing.  Against the nearest airport's
+QNH the standard reduction agrees to 0.28 hPa (its rounding); the
+live-temperature one scattered by 1.3 hPa.
 
 ### Wet-bulb temperature
 
@@ -160,8 +219,10 @@ Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed $< 
 | **Cold** | Trough (accel $> 0.5$) | Veering (CW shift $> 15$ deg/h) | Dropping $> 1$ C/h | -- |
 | **Occluded** | Falling $> 2$ hPa/h | Large shift ($\lvert\Delta\rvert > 20$ deg/h) | -- | Dew depression $< 2$ C |
 
-Wind shift is computed from the cross-product of consecutive direction
-vectors - positive = veering (clockwise), negative = backing.
+Wind shift is the rotation rate of the mean wind vector, fitted by least
+squares over the last 2 hours and weighted by wind speed, so calm,
+directionless samples carry no weight - positive = veering (clockwise),
+negative = backing.  A wind with no prevailing direction reports no shift.
 
 ### Signal smoothing
 
@@ -197,11 +258,12 @@ Cooling raises RH (condensation, fog, precipitation).  Warming drops RH (clearin
 
 ### Pressure extrapolation
 
-Damped linear extrapolation with hourly decay factor $\gamma = 0.92$:
+Damped linear extrapolation of the tide-free pressure with hourly decay
+factor $\gamma = 0.92$, with the tide expected at each hour added back:
 
-$$P(t+h) = P_0 + \sum_{i=1}^{h} \frac{dp}{dt} \cdot \gamma^i$$
+$$P(t+h) = \left(P_0 - p_{\text{tide}}(t)\right) + \sum_{i=1}^{h} \frac{dp}{dt} \cdot \gamma^i + p_{\text{tide}}(t+h)$$
 
-Clamped to $[920, 1070]$ hPa.  The trend halves every approximately 8 hours, reflecting typical synoptic time-scales.
+The tide-free part is clamped to $[920, 1070]$ hPa.  The trend halves every approximately 8 hours, reflecting typical synoptic time-scales.
 
 </details>
 
@@ -220,7 +282,7 @@ $$\mathbf{p}_{t+1} = \mathbf{p}_t \cdot \mathbf{T}$$
 
 Key properties:
 
-- Diagonal entries are high (weather persists): $T_{ii} \in [0.50, 0.75]$
+- The diagonal is the largest entry in every row (weather persists): $T_{ii} \in [0.30, 0.70]$
 - Sunny/partly-cloudy and cloudy/rainy have the strongest off-diagonal couplings
 - Snow states only connect to cold/wet states
 
@@ -234,8 +296,8 @@ $$p_j \leftarrow p_j \cdot L_j(\text{evidence})$$
 |---|---|
 | Pressure tendency $dp/dt$ | Falling: +precip; rising: +clear |
 | Pressure acceleration $d^2p/dt^2$ | Negative: +severe weather |
-| Humidity | High: +fog/precip; low: +clear |
-| Dew depression trend | Converging: +fog/precip |
+| Humidity | High: +fog/precip; low: +clear (only with a humidity sensor) |
+| Dew depression trend | Converging: +fog/precip (only with a humidity sensor) |
 | Frontal flags | Warm: +rain; cold: +showers/wind |
 | Wind speed | High: +windy state |
 
@@ -245,7 +307,7 @@ After evidence multiplication, the vector is renormalised to sum to 1.
 
 Physical impossibilities are zeroed out:
 
-- **No snow above 6 C** - $p(\text{snowy}) = p(\text{snowy-rainy}) = 0$ if $T > 6$
+- **Precipitation type by wet-bulb** - no snow or sleet when the forecast wet-bulb exceeds 6 C; no rain, pouring or thunderstorm below -2 C
 - **Day/night swap** - $p(\text{sunny}) \leftrightarrow p(\text{clear-night})$ based on whether the forecast hour falls between sunrise and sunset
 - **Precipitation probability** - sum of all wet-state probabilities (rainy + pouring + snowy + snowy-rainy + lightning-rainy)
 
@@ -280,7 +342,9 @@ sensor is not configured, rather than published from a placeholder value.
 Standard weather entity properties are also available:
 `temperature`, `apparent_temperature`, `dew_point`, `humidity`,
 `pressure`, `wind_speed`, `wind_bearing`, hourly forecast (12h),
-daily forecast (today, tomorrow and the day after).
+daily forecast (today, tomorrow and the day after).  Forecast `humidity`,
+`wind_speed` and `wind_bearing` are `null` when the matching sensor is not
+configured.
 
 </details>
 
@@ -303,7 +367,7 @@ All entity IDs are prefixed `sensor.local_weather_forecast_`.
 | `1h_forecast` | text | Forecast condition for +1h (human-readable) |
 | `next_hour_precipitation_probability` | % | Precipitation probability for +1h |
 | `sea_level_pressure` | hPa | Sea-level (QNH) pressure - the value feeding the weather entity |
-| `pressure_tendency` | hPa/h | WMO 3-hour pressure tendency (the real number, for charts/automations) |
+| `pressure_tendency` | hPa/h | 3-hour pressure tendency with the atmospheric tide removed (for charts/automations) |
 | `pressure_tendency_direction` | enum | `falling_fast` / `falling` / `steady` / `rising` / `rising_fast`, with arrow icons |
 | `pressure_synoptic` | hPa | 24-hour rolling mean of sea-level pressure |
 | `barometer` | enum | Tendency-aware needle: `stormy` / `rain` / `change` / `fair` / `very_dry` |
@@ -314,8 +378,14 @@ The `barometer`, `pressure_tendency_direction`, and `front` sensors are
 `device_class: enum` with per-state icons (from `icons.json`), so a single
 badge shows the right symbol with no template logic.
 
+The tendency differs from a raw WMO reading on purpose: the atmospheric tide
+(see Physics) swings pressure by up to ~1 hPa within 3 hours with no weather
+behind it, enough on its own to cross the 0.3 hPa/h `steady` band.  The
+`sea_level_pressure` value itself keeps the tide - that is what the
+barometer reads.
+
 The pressure ring buffer behind `pressure_tendency` and `pressure_synoptic`
-is **persisted across restarts** (via `RestoreEntity`), so the 3-hour tendency
+is **persisted across restarts** (in Home Assistant's `.storage`), so the 3-hour tendency
 and 24-hour mean survive a reboot instead of warming up for hours.
 
 These entities are designed to **retire common dashboard workarounds**: the
@@ -726,7 +796,7 @@ Add the following to your `configuration.yaml` and restart Home Assistant:
 logger:
   default: info
   logs:
-    custom_components.local_weather_forecast: debug
+    custom_components.local_forecast: debug
 ```
 
 ### Option 2 - Home Assistant UI
@@ -738,6 +808,13 @@ logger:
 5. Click **Disable debug logging** - the browser will download a log file you can inspect or attach to a bug report.
 
 Debug output includes sensor values after unit conversion, current weather state classification, and forecast summary for the next hour.
+
+### Diagnostics
+
+**Settings** -> **Devices & Services** -> **Local Weather Forecast** -> **⋮** ->
+**Download diagnostics** returns what the atmospheric tide has learned: the
+S1 / S2 / S3 amplitudes and peak solar hours, the station's daily temperature
+cycle, the site gain and lag, and how many days of evidence it holds.
 
 ---
 

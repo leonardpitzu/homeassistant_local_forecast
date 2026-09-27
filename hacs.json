@@ -1,9 +1,6 @@
 {
   "name": "Local Weather Forecast",
-  "content_in_root": false,
-  "render_readme": true,
   "homeassistant": "2026.8.0",
-  "zip_release": false,
-  "hide_default_branch": false
+  "render_readme": true
 }
 

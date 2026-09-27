@@ -7,7 +7,7 @@ nothing else; no entity reaches into the estimator.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import partial
 import logging
@@ -51,7 +51,7 @@ from .const import (
     GRAVITY_EXPONENT,
     HA_CONDITIONS,
     HISTORY_SECONDS,
-    KELVIN_OFFSET,
+    ISA_SEA_LEVEL_TEMP_K,
     LAPSE_RATE,
     PRESSURE_RELATIVE,
     STORAGE_VERSION,
@@ -61,6 +61,7 @@ from .const import (
 from .physics_models import HumidityModel, PressureModel, TemperatureModel, WindModel
 from .pressure_history import PressureHistory
 from .state_estimator import SensorReading, StateEstimator
+from .tide import LocalTide
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -167,14 +168,13 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         # optional sensors the user has just cleared.
         self._config: dict[str, Any] = dict(entry.options or entry.data)
 
-        self._estimator = StateEstimator(
-            latitude=hass.config.latitude,
-            longitude=hass.config.longitude,
-        )
+        # One tide for every consumer: trends subtract it, the forecast adds it back.
+        self.tide = LocalTide(hass.config.latitude, hass.config.longitude)
+        self._estimator = StateEstimator(tide_hpa=self.tide.hpa_at)
         self._forecaster = BayesianForecaster()
         self._has_data = False
 
-        self.pressure_history = PressureHistory()
+        self.pressure_history = PressureHistory(tide_hpa=self.tide.hpa_at)
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.pressure")
 
         # Sample timestamps must be monotonic — the history buffer is bisected
@@ -187,10 +187,11 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
     #  Lifecycle
     # ------------------------------------------------------------------
 
-    async def async_load_pressure_history(self) -> None:
-        """Restore the persisted sea-level pressure buffer."""
+    async def async_restore(self) -> None:
+        """Restore the persisted sea-level pressure buffer and the learned tide."""
         if (saved := await self._store.async_load()) and isinstance(saved, dict):
             self.pressure_history.load(saved.get("samples", []))
+            self.tide.load(saved.get("tide"))
 
     @callback
     def async_track_sources(self, entry: ConfigEntry) -> None:
@@ -302,7 +303,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             self._estimator.update(
                 SensorReading(
                     timestamp=ts,
-                    pressure_hpa=self._to_sea_level(value, temp),
+                    pressure_hpa=self._to_sea_level(value),
                     temperature_c=temp,
                     humidity_pct=humidity,
                 )
@@ -346,7 +347,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         if pressure is None or temperature is None:
             return False
 
-        pressure = self._to_sea_level(pressure, temperature)
+        pressure = self._to_sea_level(pressure)
         # Validate the sea-level value, not the station value: above roughly
         # 1250 m a perfectly healthy QFE reading is below 870 hPa.
         if not _SEA_LEVEL_MIN <= pressure <= _SEA_LEVEL_MAX:
@@ -368,15 +369,12 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         self._has_data = True
         return True
 
-    def _to_sea_level(self, pressure: float, temperature: float) -> float:
-        """Convert station pressure (QFE) to sea level (QNH) when needed."""
+    def _to_sea_level(self, pressure: float) -> float:
+        """Convert station pressure (QFE) to QNH through the standard atmosphere."""
         if self._config.get(CONF_PRESSURE_TYPE, DEFAULT_PRESSURE_TYPE) == PRESSURE_RELATIVE:
             return pressure
         elevation = self._config.get(CONF_ELEVATION, DEFAULT_ELEVATION)
-        if not elevation:
-            return pressure
-        temp_kelvin = max(200.0, temperature + KELVIN_OFFSET)
-        return pressure * (1 - LAPSE_RATE * elevation / temp_kelvin) ** -GRAVITY_EXPONENT
+        return pressure * (1 - LAPSE_RATE * elevation / ISA_SEA_LEVEL_TEMP_K) ** -GRAVITY_EXPONENT
 
     def _read_float(self, config_key: str) -> float | None:
         sid = self._config.get(config_key)
@@ -462,8 +460,9 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             sunrise_hour=sunrise_h,
             sunset_hour=sunset_h,
             current_hour=now_h,
-            latitude=self.hass.config.latitude or 48.0,
+            latitude=self.hass.config.latitude,
         )
+        now_ts = now_local.timestamp()
         hourly = self._forecaster.forecast(
             current_state_idx=current_idx,
             smoothed=s,
@@ -472,10 +471,27 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             sunset_hour=sunset_h,
             current_hour=now_h,
             predict_temperature=temp_model,
-            predict_pressure=PressureModel(s.pressure, s.dp_dt),
+            predict_pressure=PressureModel(
+                s.pressure - self.tide.hpa_at(now_ts),
+                s.dp_dt,
+                tide=lambda h: self.tide.hpa_at(now_ts + h * 3600.0),
+            ),
             predict_humidity=HumidityModel(s.humidity, s.temperature, temp_model),
             predict_wind=WindModel(s.wind_speed, s.wind_direction, s.dp_dt),
         )
+        # The physics runs on placeholders for missing channels; publishing
+        # them would present those placeholders as a forecast.
+        unmeasured = {
+            name: None
+            for name, key in (
+                ("humidity", CONF_HUMIDITY_SENSOR),
+                ("wind_speed", CONF_WIND_SPEED_SENSOR),
+                ("wind_bearing", CONF_WIND_DIRECTION_SENSOR),
+            )
+            if not self.has_source(key)
+        }
+        if unmeasured:
+            hourly = [replace(hf, **unmeasured) for hf in hourly]
 
         if hourly:
             h1 = hourly[0]
@@ -487,7 +503,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
                 h1.precipitation_probability,
             )
 
-        self._record_pressure(s.pressure)
+        self._record_pressure(s.pressure, s.temperature)
 
         return ForecastResult(
             generated=now_local,
@@ -506,16 +522,18 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             hourly_dicts=_hourly_dicts(hourly, now_local),
         )
 
-    def _record_pressure(self, pressure: float) -> None:
-        """Append an hourly sea-level sample for the tendency/barometer sensors."""
+    def _record_pressure(self, pressure: float, temperature: float) -> None:
+        """Append an hourly sea-level sample and let the tide learn from it."""
         if not _SEA_LEVEL_MIN <= pressure <= _SEA_LEVEL_MAX:
             return
-        buffer = self.pressure_history
-        before = len(buffer.dump())
-        # Wall clock on purpose: this buffer is persisted across restarts.
-        buffer.record(time.time(), pressure)
-        if len(buffer.dump()) != before:
-            self._store.async_delay_save(lambda: {"samples": buffer.dump()}, 60)
+        # Wall clock on purpose: both are persisted across restarts, and the tide
+        # is phased to the real sun.
+        now = time.time()
+        if self.pressure_history.record(now, pressure):
+            self.tide.learn(now, pressure, temperature)
+            self._store.async_delay_save(
+                lambda: {"samples": self.pressure_history.dump(), "tide": self.tide.dump()}, 60
+            )
 
     def _apparent_temperature(self) -> float:
         """Feels-like temperature — wind chill or heat index."""
@@ -613,19 +631,19 @@ def _hourly_dicts(hourly: list[HourForecast], generated: datetime) -> list[dict[
 
     Mirrors what ``get_forecasts`` returns but in the entity's native units,
     so a dashboard meteogram card can read it straight off the sensor without
-    a websocket subscription.
+    a websocket subscription.  Values arrive already rounded.
     """
     return [
         {
             "datetime": (generated + timedelta(hours=hf.hours_ahead)).isoformat(),
             "condition": hf.condition,
-            "temperature": round(hf.temperature, 1),
+            "temperature": hf.temperature,
             "humidity": hf.humidity,
-            "pressure": round(hf.pressure, 1),
+            "pressure": hf.pressure,
             "precipitation_probability": hf.precipitation_probability,
-            "precipitation": round(hf.precipitation_amount, 1),
-            "wind_speed": round(hf.wind_speed, 1),
-            "wind_bearing": round(hf.wind_bearing),
+            "precipitation": hf.precipitation_amount,
+            "wind_speed": hf.wind_speed,
+            "wind_bearing": hf.wind_bearing,
             "is_daytime": hf.is_daytime,
         }
         for hf in hourly

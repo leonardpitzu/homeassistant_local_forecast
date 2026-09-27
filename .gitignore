@@ -57,7 +57,8 @@ htmlcov/
 coverage.xml
 .mypy_cache/
 .ruff_cache/
-test_*.py  # Ignore test files in root (should be in tests/ folder)
+# Test files in the repo root only (they belong in tests/)
+/test_*.py
 
 # Development/Internal files - DO NOT COMMIT
 *SUMMARY*.md
@@ -99,3 +100,6 @@ desktop.ini
 
 # Agent memory (local only — never publish)
 AGENTS.md
+
+# Internal debug tools
+tools/

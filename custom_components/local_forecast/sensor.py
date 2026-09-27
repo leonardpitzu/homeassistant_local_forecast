@@ -106,6 +106,11 @@ def _tendency(coordinator: LocalForecastCoordinator, data: ForecastResult):
     return coordinator.pressure_history.tendency_per_hour(time.time(), data.pressure)
 
 
+def _rounded(value: float | None, ndigits: int) -> float | None:
+    """Round a published value; full precision writes a recorder row every tick."""
+    return None if value is None else round(value, ndigits)
+
+
 @dataclass(frozen=True, kw_only=True)
 class LocalForecastSensorEntityDescription(SensorEntityDescription):
     """Describes one Local Weather Forecast sensor.
@@ -163,7 +168,7 @@ SENSORS: tuple[LocalForecastSensorEntityDescription, ...] = (
         native_unit_of_measurement="hPa/h",
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=2,
-        value_fn=_tendency,
+        value_fn=lambda c, d: _rounded(_tendency(c, d), 2),
     ),
     LocalForecastSensorEntityDescription(
         key="pressure_tendency_direction",
@@ -180,7 +185,7 @@ SENSORS: tuple[LocalForecastSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfPressure.HPA,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
-        value_fn=lambda c, d: c.pressure_history.mean(time.time(), d.pressure),
+        value_fn=lambda c, d: _rounded(c.pressure_history.mean(time.time(), d.pressure), 1),
     ),
     LocalForecastSensorEntityDescription(
         key="barometer",

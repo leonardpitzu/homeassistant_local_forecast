@@ -38,6 +38,22 @@ class TestRecord:
         buf.record(3000.0, None)
         assert buf.dump() == []
 
+    def test_reports_every_stored_sample_in_steady_state(self):
+        """Persistence keys off this; a full buffer must still say 'stored'."""
+        buf = PressureHistory()
+        stored = [buf.record(i * 300.0, 1013.0) for i in range(72 * 12)]  # 72 h, 5-min refresh
+        accepted = sum(stored)
+        assert accepted >= 72  # one per ~55 min, never stalling after the first day
+        assert any(stored[-13:])  # still storing in the last hour
+
+    def test_keeps_a_full_day_at_refresh_cadence(self):
+        """Samples land ~55 min apart; the buffer must not drop the oldest hour."""
+        buf = PressureHistory()
+        for i in range(48 * 12):
+            buf.record(i * 300.0, 1013.0)
+        samples = buf.dump()
+        assert samples[-1][0] - samples[0][0] >= 24 * HOUR
+
     def test_prunes_beyond_window(self):
         buf = PressureHistory()
         _fill_hourly(buf, 0.0, [1013.0] * 30)  # 30 h of samples
@@ -67,6 +83,16 @@ class TestTendency:
         buf = PressureHistory()
         _fill_hourly(buf, 0.0, [1016.0, 1015.0, 1014.0, 1013.0])
         assert buf.tendency_per_hour(3 * HOUR, None) is None
+
+    def test_tide_is_taken_out_of_the_change(self):
+        """A barometer that only follows the tide has no tendency."""
+
+        def tide(ts):
+            return 0.2 * ts / HOUR  # a tide rising 0.2 hPa/h
+
+        buf = PressureHistory(tide_hpa=tide)
+        _fill_hourly(buf, 0.0, [1013.0, 1013.2, 1013.4, 1013.6])
+        assert abs(buf.tendency_per_hour(3 * HOUR, 1013.6)) < 1e-9
 
 
 class TestMean:

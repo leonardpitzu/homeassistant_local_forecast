@@ -7,17 +7,21 @@ instance and assert on the published states.
 
 from __future__ import annotations
 
+from datetime import datetime
 import math
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.components.diagnostics import get_diagnostics_for_config_entry
 
+from local_forecast.bayesian_forecaster import HourForecast
 from local_forecast.const import (
     CONF_ELEVATION,
     CONF_HUMIDITY_SENSOR,
@@ -33,6 +37,8 @@ from local_forecast.const import (
     PRESSURE_ABSOLUTE,
 )
 from local_forecast.map import _ring_radius
+from local_forecast.tide import LocalTide
+from local_forecast.weather import LocalForecastWeather
 
 WEATHER = "weather.local_weather_forecast"
 
@@ -227,6 +233,49 @@ async def test_unconfigured_channels_report_none(hass):
     assert "dew_point" not in attrs
     assert "wind_force" not in attrs
 
+    for kind in ("hourly", "daily"):
+        result = await hass.services.async_call(
+            "weather",
+            "get_forecasts",
+            {"entity_id": WEATHER, "type": kind},
+            blocking=True,
+            return_response=True,
+        )
+        for item in result[WEATHER]["forecast"]:
+            for key in ("humidity", "wind_speed", "wind_bearing"):
+                assert item.get(key) is None, (kind, key)
+
+    meteogram = hass.states.get("sensor.local_weather_forecast_hourly_forecast").attributes["forecast"]
+    assert all(item["humidity"] is None and item["wind_speed"] is None for item in meteogram)
+
+
+async def test_daily_today_ends_at_local_midnight():
+    """At 14:30 the +10 h hour is 00:30 tomorrow, not the last hour of today."""
+    generated = datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone())
+    hourly = [
+        HourForecast(
+            hours_ahead=h,
+            condition="cloudy",
+            temperature=float(h),
+            humidity=60.0,
+            pressure=1013.0,
+            precipitation_probability=0,
+            precipitation_amount=0.0,
+            wind_speed=2.0,
+            wind_bearing=180,
+        )
+        for h in range(1, 13)
+    ]
+    weather = LocalForecastWeather.__new__(LocalForecastWeather)
+    weather.coordinator = SimpleNamespace(
+        data=SimpleNamespace(generated=generated, hourly=hourly),
+    )
+
+    today, tomorrow, _ = await weather.async_forecast_daily()
+
+    assert today["native_temperature"] == 9.0
+    assert tomorrow["native_templow"] == 10.0
+
 
 async def test_high_altitude_station_is_not_rejected(hass):
     """A QFE reading at 1600 m is ~835 hPa and must still be accepted."""
@@ -240,6 +289,17 @@ async def test_high_altitude_station_is_not_rejected(hass):
     state = hass.states.get(WEATHER)
     assert state.state != STATE_UNAVAILABLE
     assert 990.0 < state.attributes["pressure"] < 1040.0
+
+
+@pytest.mark.parametrize("temperature", ["-10.0", "30.0"])
+async def test_qnh_uses_the_standard_atmosphere(hass, temperature):
+    """Brasov airport's QNH is matched to 0.3 hPa only when the live temperature stays out."""
+    _set(hass, "sensor.pressure", "957.0", "hPa")
+    _set(hass, "sensor.temperature", temperature, "°C")
+    await _setup(hass, _entry(hass, **{CONF_ELEVATION: 544, CONF_PRESSURE_TYPE: PRESSURE_ABSOLUTE}))
+
+    qnh = 957.0 * (1 - 0.0065 * 544 / 288.15) ** -5.257
+    assert hass.states.get(WEATHER).attributes["pressure"] == pytest.approx(qnh, abs=0.05)
 
 
 async def test_units_are_converted_by_home_assistant(hass):
@@ -397,3 +457,54 @@ async def test_setup_with_recorder_present(recorder_mock, hass, sensors):
     """The startup backfill path must run against a real recorder."""
     await _setup(hass, _entry(hass))
     assert hass.states.get(WEATHER).state != STATE_UNAVAILABLE
+
+
+async def test_restored_tendency_excludes_the_tide(hass, sensors, hass_storage, freezer):
+    """Same pressure as 3 h ago: whatever the tendency reads is the tide, reversed."""
+    tide = LocalTide(hass.config.latitude, hass.config.longitude).hpa_at
+
+    # Pick the moment of the day with the largest 3 h tide swing, so the test
+    # cannot pass by landing on a flat stretch.
+    now = max((1.79e9 + i * 1800 for i in range(48)), key=lambda t: abs(tide(t) - tide(t - 3 * 3600)))
+    freezer.move_to(datetime.fromtimestamp(now, dt_util.UTC))
+    hass_storage[f"{DOMAIN}.test.pressure"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"{DOMAIN}.test.pressure",
+        "data": {"samples": [[now - 3 * 3600, 1013.2]]},
+    }
+
+    await _setup(hass, _entry(hass))
+
+    expected = -(tide(now) - tide(now - 3 * 3600)) / 3
+    assert abs(expected) > 0.1
+    state = hass.states.get("sensor.local_weather_forecast_pressure_tendency")
+    assert float(state.state) == pytest.approx(expected, abs=0.006)
+
+
+async def test_forecast_pressure_carries_the_tide_of_each_hour(hass, sensors, freezer):
+    """Steady weather: each forecast hour moves by exactly the tide between now and then."""
+    freezer.move_to(datetime.fromtimestamp(1.79e9, dt_util.UTC))
+    entry = _entry(hass)
+    await _setup(hass, entry)
+    tide = entry.runtime_data.tide.hpa_at
+
+    result = await hass.services.async_call(
+        "weather", "get_forecasts", {"entity_id": WEATHER, "type": "hourly"}, blocking=True, return_response=True
+    )
+    now = 1.79e9
+    pressures = [item["pressure"] for item in result[WEATHER]["forecast"]]
+    expected = [1013.2 - tide(now) + tide(now + h * 3600) for h in range(1, 13)]
+    assert max(expected) - min(expected) > 0.3
+    assert pressures == pytest.approx(expected, abs=0.06)
+
+
+async def test_diagnostics_report_the_learned_tide(hass, sensors, hass_client):
+    await async_setup_component(hass, "http", {})
+    entry = _entry(hass)
+    await _setup(hass, entry)
+
+    data = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+
+    assert data["config"][CONF_PRESSURE_SENSOR] == "sensor.pressure"
+    assert set(data["tide"]) >= {"tide_now_hpa", "s1_hpa", "s2_hpa", "s3_hpa", "site_gain_hpa_per_k", "learned_days"}

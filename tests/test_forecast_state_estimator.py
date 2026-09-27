@@ -1,6 +1,8 @@
 """Tests for local_forecast.state_estimator — sensor fusion, trends, classification."""
 
+import math
 import os
+import random
 import sys
 import time
 
@@ -12,7 +14,7 @@ sys.path.insert(
 from local_forecast.const import (
     HA_CONDITIONS,
 )
-from local_forecast.state_estimator import SensorReading, SmoothedState, StateEstimator
+from local_forecast.state_estimator import SensorReading, SmoothedState, StateEstimator, dew_point_magnus
 
 
 def _reading(
@@ -699,3 +701,88 @@ class TestWindDirectionSmoothing:
         for i in range(20):
             est.update(_reading(ts=base + i * 60, wind_dir=135.0))
         assert abs(est.state.wind_direction - 135.0) < 1.0
+
+
+# ===================================================================
+#  Rates that feed the frontal flags and Bayesian evidence
+# ===================================================================
+
+
+def _noisy_run(
+    cadence_s,
+    hours,
+    *,
+    temp_fn=lambda _h: 12.0,
+    rh_fn=lambda _h: 60.0,
+    dir_fn=lambda _h: 200.0,
+    speed_fn=lambda _h: 3.0,
+    seed=7,
+):
+    """Feed ``hours`` of readings at ``cadence_s`` with gust-like scatter."""
+    rng = random.Random(seed)
+    est = StateEstimator()
+    base = 1.79e9
+    for i in range(int(hours * 3600 / cadence_s)):
+        h = i * cadence_s / 3600.0
+        est.update(
+            _reading(
+                ts=base + i * cadence_s,
+                pressure=1013.0 + rng.gauss(0, 0.05),
+                temp=temp_fn(h) + rng.gauss(0, 0.1),
+                humidity=min(100.0, rh_fn(h) + rng.gauss(0, 0.5)),
+                wind=speed_fn(h),
+                wind_dir=(dir_fn(h) + rng.gauss(0, 25)) % 360,
+            )
+        )
+        yield h, est
+
+
+class TestDewDepressionTrend:
+    """dd_trend is a fitted rate, not a difference of two rounded samples."""
+
+    def test_steady_air_never_reads_as_converging(self):
+        for cadence in (30, 300):
+            for h, est in _noisy_run(cadence, 4, rh_fn=lambda _h: 81.0):
+                if h > 1:
+                    assert abs(est.state.dd_trend) < 0.5, (cadence, h)
+
+    def test_tracks_real_convergence(self):
+        # T falls 1.5 C/h at a fixed dew point: dew depression closes at 1.5 C/h.
+        td = dew_point_magnus(14.0, 70.0)
+
+        def rh(h):
+            t = 14.0 - 1.5 * h
+            return 100.0 * math.exp(17.27 * td / (237.7 + td) - 17.27 * t / (237.7 + t))
+
+        *_, (_, est) = _noisy_run(60, 2, temp_fn=lambda h: 14.0 - 1.5 * h, rh_fn=rh)
+        assert -1.8 < est.state.dd_trend < -1.2
+
+
+class TestVeer:
+    """Wind shift is the rotation of the mean wind vector over a fixed span."""
+
+    def test_gusty_steady_wind_rarely_reads_as_a_shift(self):
+        """The old endpoint difference crossed the 15 deg/h front gate on 84 % of these ticks."""
+        for cadence in (30, 300):
+            rates = [abs(est._veer_rate) for h, est in _noisy_run(cadence, 8) if h > 2.5]
+            assert sum(r > 15.0 for r in rates) / len(rates) < 0.1, cadence
+
+    def test_veering_is_positive_and_backing_negative(self):
+        *_, (_, veer) = _noisy_run(60, 3, dir_fn=lambda h: 200 + 40 * h)
+        *_, (_, back) = _noisy_run(60, 3, dir_fn=lambda h: 200 - 40 * h)
+        assert 30.0 < veer._veer_rate < 50.0
+        assert -50.0 < back._veer_rate < -30.0
+
+    def test_shift_across_north_is_not_a_full_turn(self):
+        *_, (_, est) = _noisy_run(60, 3, dir_fn=lambda h: 330 + 40 * h)
+        assert 30.0 < est._veer_rate < 50.0
+
+    def test_calm_without_a_prevailing_direction_reads_no_shift(self):
+        rng = random.Random(3)
+        *_, (_, est) = _noisy_run(
+            30,
+            3,
+            dir_fn=lambda _h: rng.uniform(0, 360),
+            speed_fn=lambda _h: abs(rng.gauss(0.3, 0.3)),
+        )
+        assert est._veer_rate == 0.0

@@ -212,6 +212,19 @@ class TestPrecipitationProbability:
         )
         assert result[0].precipitation_probability > 40
 
+    def test_placeholder_humidity_is_not_evidence(self):
+        """Without a sensor, a model-driven 95 % must not push toward rain."""
+        fc = BayesianForecaster()
+
+        def precip(*, has_humidity, humid):
+            s = _smoothed(dd_trend=-2.0, dew_depression=3.0) if humid else _smoothed()
+            s.has_humidity = has_humidity
+            predict = (lambda _h: 95.0) if humid else None
+            return sum(h.precipitation_probability for h in fc.forecast(S_CLOUDY, s, predict_humidity=predict))
+
+        assert precip(has_humidity=False, humid=True) == precip(has_humidity=False, humid=False)
+        assert precip(has_humidity=True, humid=True) > precip(has_humidity=True, humid=False)
+
 
 class TestPhysicsModelIntegration:
     """Forecaster with physics model callables."""

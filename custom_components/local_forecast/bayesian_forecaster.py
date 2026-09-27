@@ -49,12 +49,12 @@ class HourForecast:
     hours_ahead: int
     condition: str  # HA condition string (drives the icon)
     temperature: float  # °C
-    humidity: float  # %
+    humidity: float | None  # %, None without a humidity sensor
     pressure: float  # hPa
     precipitation_probability: int  # 0-100
     precipitation_amount: float  # mm expected in this hour
-    wind_speed: float  # m/s
-    wind_bearing: float  # degrees
+    wind_speed: float | None  # m/s, None without a wind-speed sensor
+    wind_bearing: float | None  # degrees, None without a wind-direction sensor
     is_daytime: bool = True  # day/night flag for icon variants
 
 
@@ -438,19 +438,21 @@ class BayesianForecaster:
                 likelihood[idx] *= 1.0 + 0.6 * w
 
         # --- Humidity ---
-        if humidity > 85:
+        # Only when measured: the placeholder run through Clausius-Clapeyron
+        # reads >85 % on any cool night.
+        if s.has_humidity and humidity > 85:
             for idx in (S_RAINY, S_POURING, S_FOG, S_SNOWY, S_SNOWY_RAINY):
                 likelihood[idx] *= 1.0 + 0.4 * w
             for idx in (S_CLEAR, S_CLEAR_NIGHT):
                 likelihood[idx] *= max(0.3, 1.0 - 0.4 * w)
-        elif humidity < 40:
+        elif s.has_humidity and humidity < 40:
             for idx in (S_CLEAR, S_CLEAR_NIGHT, S_PARTLY_CLOUDY):
                 likelihood[idx] *= 1.0 + 0.3 * w
             for idx in (S_RAINY, S_POURING, S_FOG, S_SNOWY, S_SNOWY_RAINY):
                 likelihood[idx] *= max(0.2, 1.0 - 0.5 * w)
 
         # --- Dew-point depression convergence → imminent precip/fog ---
-        if s.dd_trend < -1.0 and s.dew_depression < 4.0:
+        if s.has_humidity and s.dd_trend < -1.0 and s.dew_depression < 4.0:
             for idx in (S_RAINY, S_FOG, S_SNOWY, S_SNOWY_RAINY):
                 likelihood[idx] *= 1.0 + 0.5 * w
 

@@ -14,12 +14,5 @@ sqlalchemy>=2.0.0  # Required for homeassistant.components.recorder
 # Declared in manifest.json; not a Home Assistant core dependency
 defusedxml>=0.7.1  # hardened XML parsing for the EUMETView capabilities feed
 
-# Code quality (optional)
-# pylint>=3.0.0
-# black>=24.0.0
-# isort>=5.13.0
-# mypy>=1.8.0
-
-# Optional but recommended
 pytest-timeout>=2.3.0  # Timeout for hanging tests
 

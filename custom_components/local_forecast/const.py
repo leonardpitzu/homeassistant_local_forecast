@@ -51,7 +51,9 @@ DEFAULT_ENABLE_MAP: Final = False
 # --- Physical constants ---
 LAPSE_RATE: Final = 0.0065  # K/m  (ISA tropospheric lapse rate)
 GRAVITY_EXPONENT: Final = 5.257  # g/(L·R) for barometric formula
-KELVIN_OFFSET: Final = 273.15
+# QNH reduces through the ICAO standard atmosphere, never the live temperature:
+# at 544 m that would add 0.24 hPa per K, a fake ~3 hPa daily swing.
+ISA_SEA_LEVEL_TEMP_K: Final = 288.15
 
 # ---------------------------------------------------------------------------
 #  Internal weather states

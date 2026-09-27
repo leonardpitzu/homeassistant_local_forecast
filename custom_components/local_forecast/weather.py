@@ -185,9 +185,8 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
 
         now = data.generated
         hourly = data.hourly
-        hours_left_today = 24 - now.hour
-        today_hours = [h for h in hourly if h.hours_ahead <= hours_left_today]
-        tomorrow_hours = [h for h in hourly if h.hours_ahead > hours_left_today]
+        today_hours = [h for h in hourly if (now + timedelta(hours=h.hours_ahead)).date() == now.date()]
+        tomorrow_hours = [h for h in hourly if (now + timedelta(hours=h.hours_ahead)).date() != now.date()]
 
         # If all forecast hours fall in today, use the tail as proxy
         if not tomorrow_hours:
@@ -223,10 +222,10 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
                     native_templow=round(min(temps), 1),
                     precipitation_probability=max(h.precipitation_probability for h in hours),
                     native_precipitation=round(sum(h.precipitation_amount for h in hours), 1),
-                    humidity=round(sum(h.humidity for h in hours) / len(hours)),
-                    native_pressure=round(sum(h.pressure for h in hours) / len(hours), 1),
-                    native_wind_speed=round(sum(h.wind_speed for h in hours) / len(hours), 1),
-                    wind_bearing=round(hours[0].wind_bearing),
+                    humidity=_mean([h.humidity for h in hours]),
+                    native_pressure=_mean([h.pressure for h in hours], 1),
+                    native_wind_speed=_mean([h.wind_speed for h in hours], 1),
+                    wind_bearing=hours[0].wind_bearing,
                     is_daytime=True,
                 )
             )
@@ -269,7 +268,8 @@ def _extrapolate_day2(
     # Pressure continues the gentle trend; humidity regresses toward the
     # 55% continental mean.
     pressure = round(last.pressure + last.pressure - tomorrow_hours[0].pressure, 1)
-    humidity = round((sum(h.humidity for h in tomorrow_hours) / len(tomorrow_hours)) * 0.7 + 55 * 0.3)
+    humidities = [h.humidity for h in tomorrow_hours]
+    humidity = None if None in humidities else round(sum(humidities) / len(humidities) * 0.7 + 55 * 0.3)
 
     day = now.date() + timedelta(days=2)
     return Forecast(  # type: ignore[typeddict-unknown-key]
@@ -281,10 +281,17 @@ def _extrapolate_day2(
         native_precipitation=round(sum(h.precipitation_amount for h in tomorrow_hours) * 0.7, 1),
         humidity=humidity,
         native_pressure=max(920.0, min(1070.0, pressure)),
-        native_wind_speed=round(last.wind_speed * 0.8 + 0.5, 1),
-        wind_bearing=round(last.wind_bearing),
+        native_wind_speed=None if last.wind_speed is None else round(last.wind_speed * 0.8 + 0.5, 1),
+        wind_bearing=last.wind_bearing,
         is_daytime=True,
     )
+
+
+def _mean(values: list[float | None], ndigits: int | None = None) -> float | None:
+    """Rounded mean of one channel, or None when that channel is not measured."""
+    if not values or None in values:
+        return None
+    return round(sum(values) / len(values), ndigits)
 
 
 def _worst_condition(hours: list[HourForecast]) -> str:

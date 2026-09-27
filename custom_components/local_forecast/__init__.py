@@ -21,7 +21,7 @@ PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: LocalForecastConfigEntry) -> bool:
     """Set up Local Weather Forecast from a config entry."""
     coordinator = LocalForecastCoordinator(hass, entry)
-    await coordinator.async_load_pressure_history()
+    await coordinator.async_restore()
     await coordinator.async_config_entry_first_refresh()
     coordinator.async_track_sources(entry)
     entry.runtime_data = coordinator

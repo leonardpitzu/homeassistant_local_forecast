@@ -6,8 +6,8 @@
   "config_flow": true,
   "dependencies": ["http"],
   "documentation": "https://github.com/leonardpitzu/homeassistant_local_forecast",
-  "iot_class": "local_push",
+  "iot_class": "calculated",
   "issue_tracker": "https://github.com/leonardpitzu/homeassistant_local_forecast/issues",
   "requirements": ["defusedxml"],
-  "version": "1.5.0"
+  "version": "1.6.0"
 }

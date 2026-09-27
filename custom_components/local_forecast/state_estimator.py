@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import bisect
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 import math
 
@@ -41,7 +42,6 @@ from .const import (
     WET_BULB_SNOW,
     WIND_STRONG,
 )
-from .tide import tide_hpa_at
 
 # ---------------------------------------------------------------------------
 #  Data containers
@@ -136,6 +136,11 @@ POST_RAIN_CLOUD_FLOOR: float = 0.40
 # lagging genuine wind shifts.
 WIND_DIR_SMOOTH_ALPHA: float = 0.3
 
+# Span of the veer fit.  Measured on 25 deg gust scatter: 1 h reads >15 deg/h
+# on 17-46 % of dead-steady ticks, 2 h on 0-4 %, and a 60 deg frontal veer
+# still peaks at 40-50 deg/h.
+VEER_WINDOW_SECONDS: float = 7200.0
+
 
 def dew_point_magnus(temperature_c: float, humidity_pct: float) -> float:
     """Dew point in °C from temperature and relative humidity (Magnus)."""
@@ -169,13 +174,11 @@ class StateEstimator:
         *,
         history_size: int = HISTORY_MAX_RECORDS,
         history_seconds: float = HISTORY_SECONDS,
-        latitude: float | None = None,
-        longitude: float | None = None,
+        tide_hpa: Callable[[float], float] | None = None,
     ) -> None:
         self._history: deque[SensorReading] = deque(maxlen=history_size)
         self._history_seconds = history_seconds
-        self._latitude = latitude
-        self._longitude = longitude
+        self._tide = tide_hpa  # epoch seconds -> hPa, removed before any trend fit
         self._kf: dict[str, _KalmanChannel] = {
             "pressure": _KalmanChannel(q=0.005, r=0.15),
             "temperature": _KalmanChannel(q=0.02, r=0.3),
@@ -183,8 +186,7 @@ class StateEstimator:
             "wind_speed": _KalmanChannel(q=0.1, r=0.5),
         }
         self._state = SmoothedState()
-        self._prev_dd: float | None = None
-        self._wind_history: deque[tuple[float, float]] = deque(maxlen=60)
+        self._veer_rate = 0.0  # deg/h, + = veering (clockwise)
         # Circular (vector) smoothing of wind bearing
         self._wind_dir_sin: float | None = None
         self._wind_dir_cos: float | None = None
@@ -212,7 +214,6 @@ class StateEstimator:
             self._state.wind_speed = self._kalman("wind_speed", reading.wind_speed_ms)
         if reading.wind_direction_deg is not None:
             self._state.wind_direction = self._smooth_wind_direction(reading.wind_direction_deg)
-            self._wind_history.append((reading.timestamp, reading.wind_direction_deg))
         if reading.solar_radiation_wm2 is not None:
             self._state.solar_radiation = reading.solar_radiation_wm2
         if reading.rain_rate_mmh is not None:
@@ -403,7 +404,7 @@ class StateEstimator:
         return math.degrees(math.atan2(self._wind_dir_sin, self._wind_dir_cos)) % 360.0
 
     def _compute_trends(self) -> None:
-        """Compute dp/dt, d²p/dt², dT/dt, dH/dt from history ring buffer."""
+        """Compute dp/dt, d²p/dt², dT/dt, dH/dt, dew-depression and veer rates."""
         if len(self._history) < 2:
             return
 
@@ -426,9 +427,24 @@ class StateEstimator:
             w_times = [(r.timestamp - t_now) / 3600.0 for r in window]
             self._state.dp_dt = self._slope(w_times, [self._detided(r) for r in window])
             self._state.dt_dt = self._slope(w_times, [r.temperature_c for r in window])
-            hum = [(t, r.humidity_pct) for t, r in zip(w_times, window, strict=True) if r.humidity_pct is not None]
+            hum = [(t, r) for t, r in zip(w_times, window, strict=True) if r.humidity_pct is not None]
             if len(hum) >= 2:
-                self._state.dh_dt = self._slope([t for t, _ in hum], [h for _, h in hum])
+                h_times = [t for t, _ in hum]
+                self._state.dh_dt = self._slope(h_times, [r.humidity_pct for _, r in hum])
+                self._state.dd_trend = self._slope(
+                    h_times, [r.temperature_c - dew_point_magnus(r.temperature_c, r.humidity_pct) for _, r in hum]
+                )
+
+        # Veer over a longer span: gusts scatter the bearing by tens of
+        # degrees, so a 1 h fit at a 5-min cadence is mostly that noise.
+        veer_from = t_now - VEER_WINDOW_SECONDS
+        wind = [r for r in hist[bisect.bisect_left(times, veer_from) :] if r.wind_direction_deg is not None]
+        if len(wind) >= 2 and wind[-1].timestamp - wind[0].timestamp >= 360.0:
+            self._veer_rate = self._veer(
+                [(r.timestamp - t_now) / 3600.0 for r in wind],
+                [r.wind_direction_deg for r in wind],
+                [1.0 if r.wind_speed_ms is None else r.wind_speed_ms for r in wind],
+            )
 
         # Pressure acceleration over a ~3 h span, from the *actual* sample
         # spacing.  The samples the buffer returns are only approximately at
@@ -451,9 +467,11 @@ class StateEstimator:
 
         The reported pressure keeps its tide: that is what the barometer actually
         reads. Only the tendency needs it gone, and there the tide is not a small
-        correction — its own slope rivals the steady/moving threshold.
+        correction - its own slope rivals the steady/moving threshold.
         """
-        return reading.pressure_hpa - tide_hpa_at(reading.timestamp, self._latitude, self._longitude)
+        if self._tide is None:
+            return reading.pressure_hpa
+        return reading.pressure_hpa - self._tide(reading.timestamp)
 
     @staticmethod
     def _slope(times_h: list[float], values: list[float]) -> float:
@@ -467,8 +485,27 @@ class StateEstimator:
         num = sum((t - mean_t) * (v - mean_v) for t, v in zip(times_h, values, strict=True))
         return num / denom
 
+    @classmethod
+    def _veer(cls, times_h: list[float], bearings_deg: list[float], speeds: list[float]) -> float:
+        """Rotation rate of the mean wind vector in deg/h (+ = veering).
+
+        Fitting the vector components rather than unwrapped bearings keeps
+        calm, direction-less samples from reading as a shift: they carry no
+        weight, and a wind with no prevailing direction reports none.
+        """
+        rads = [math.radians(b) for b in bearings_deg]
+        xs = [s * math.sin(a) for a, s in zip(rads, speeds, strict=True)]
+        ys = [s * math.cos(a) for a, s in zip(rads, speeds, strict=True)]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        # Mean resultant length below 0.5 is a circular spread past ~65 deg.
+        if math.hypot(mx, my) * n <= 0.5 * sum(speeds):
+            return 0.0
+        rate = (my * cls._slope(times_h, xs) - mx * cls._slope(times_h, ys)) / (mx * mx + my * my)
+        return max(-180.0, min(180.0, math.degrees(rate)))
+
     def _compute_moisture(self) -> None:
-        """Dew point (Magnus), wet-bulb (Stull 2011), depression trend."""
+        """Dew point (Magnus) and wet-bulb (Stull 2011)."""
         T = self._state.temperature
         RH = max(1.0, min(100.0, self._state.humidity))
 
@@ -477,17 +514,10 @@ class StateEstimator:
         self._state.dew_depression = round(T - Td, 1)
         self._state.wet_bulb = round(wet_bulb_stull(T, RH), 1)
 
-        # --- Depression trend (°C/h) ---
-        if self._prev_dd is not None and len(self._history) >= 2:
-            dt = self._history[-1].timestamp - self._history[-2].timestamp
-            if dt > 0:
-                self._state.dd_trend = (self._state.dew_depression - self._prev_dd) / (dt / 3600)
-        self._prev_dd = self._state.dew_depression
-
     def _detect_fronts(self) -> None:
         """Detect warm / cold / occluded frontal signatures."""
         s = self._state
-        ws = self._wind_shift_rate()
+        ws = self._veer_rate
 
         # Warm front: steady pressure fall + backing wind + rising humidity
         s.front_warm = s.dp_dt < -1.0 and s.dh_dt > 2.0 and ws < -10.0
@@ -497,18 +527,6 @@ class StateEstimator:
 
         # Occluded: strong pressure fall + big wind shift + narrow depression
         s.front_occluded = s.dp_dt < -2.0 and abs(ws) > 20.0 and s.dew_depression < 2.0
-
-    def _wind_shift_rate(self) -> float:
-        """Degrees/hour change in wind direction.  Positive = veering (CW)."""
-        if len(self._wind_history) < 2:
-            return 0.0
-        oldest = self._wind_history[0]
-        newest = self._wind_history[-1]
-        dt_h = (newest[0] - oldest[0]) / 3600
-        if dt_h < 0.1:
-            return 0.0
-        diff = (newest[1] - oldest[1] + 180) % 360 - 180  # signed shortest arc
-        return max(-180.0, min(180.0, diff / dt_h))
 
     @staticmethod
     def _nearest_sorted(
@@ -576,10 +594,10 @@ class StateEstimator:
         else:
             dd_cloud = 0.80 + max(0.0, 1.5 - dd) / 1.5 * 0.20
 
+        if not self._state.has_humidity:
+            # The dew-depression proxy would be the placeholder humidity.  With
+            # no solar either, sit in the middle rather than assert a sky.
+            return 0.3 if solar_cloud is None else solar_cloud
         if solar_cloud is not None:
             return max(0.0, min(1.0, 0.6 * solar_cloud + 0.4 * dd_cloud))
-        if not self._state.has_humidity:
-            # No solar, no humidity: nothing observed says anything about the
-            # sky.  Sit in the middle rather than assert a default-driven one.
-            return 0.3
         return max(0.0, min(1.0, dd_cloud))

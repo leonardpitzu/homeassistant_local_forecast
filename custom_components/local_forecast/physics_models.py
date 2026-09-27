@@ -27,6 +27,10 @@ class PressureModel:
     every 8 hours, reflecting the typical synoptic time-scale).
 
     Clamped to [920, 1070] hPa (covers 99.9 % of surface weather).
+
+    ``current`` is the pressure with the atmospheric tide removed; ``tide(h)``,
+    when given, adds back the tide expected ``h`` hours ahead, so the forecast
+    reads like the barometer will rather than freezing today's tide in place.
     """
 
     def __init__(
@@ -34,17 +38,20 @@ class PressureModel:
         current: float,
         dp_dt: float,
         damping: float = 0.92,
+        tide: Callable[[int], float] | None = None,
     ) -> None:
         self.current = current
         self.dp_dt = dp_dt
         self.damping = damping
+        self.tide = tide
 
     def __call__(self, hours_ahead: int) -> float:
         if self.damping >= 1.0 or self.damping <= 0.0:
             total = self.dp_dt * hours_ahead
         else:
             total = self.dp_dt * (1 - self.damping**hours_ahead) / (1 - self.damping)
-        return max(920.0, min(1070.0, self.current + total))
+        synoptic = max(920.0, min(1070.0, self.current + total))
+        return synoptic if self.tide is None else synoptic + self.tide(hours_ahead)
 
 
 # ---------------------------------------------------------------------------

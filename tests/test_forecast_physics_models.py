@@ -1,5 +1,6 @@
 """Tests for local_forecast.physics_models — pressure, temperature, humidity models."""
 
+import math
 import os
 import sys
 
@@ -59,6 +60,12 @@ class TestPressureModel:
         pm_slow = PressureModel(current=1013.0, dp_dt=-2.0, damping=0.99)
         # Slow damping = more total drop over time
         assert pm_slow(12) < pm_fast(12)
+
+    def test_tide_is_added_back_hour_by_hour(self):
+        """The forecast reads like the barometer will, not with today's tide frozen in."""
+        pm = PressureModel(current=1013.0, dp_dt=0.0, tide=lambda h: 0.4 * math.cos(h))
+        for h in range(1, 13):
+            assert math.isclose(pm(h), 1013.0 + 0.4 * math.cos(h), abs_tol=1e-9)
 
 
 # =====================================================================
