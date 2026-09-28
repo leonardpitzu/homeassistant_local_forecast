@@ -13,7 +13,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -116,6 +116,15 @@ async def test_all_sensor_entities_exist(hass, sensors):
     ):
         entity_id = f"sensor.local_weather_forecast_{suffix}"
         assert hass.states.get(entity_id) is not None, entity_id
+
+
+async def test_sensor_ids_do_not_depend_on_platform_order(hass, sensors):
+    """Sensors that register the device first must not name it after the entry title."""
+    with patch("custom_components.local_forecast.PLATFORMS", [Platform.SENSOR]):
+        await _setup(hass, _entry(hass))
+
+    assert hass.states.get("sensor.local_weather_forecast_front") is not None
+    assert hass.states.get("sensor.mock_title_front") is None
 
 
 # entity_id, unique_id suffix, friendly name.  These three are what a

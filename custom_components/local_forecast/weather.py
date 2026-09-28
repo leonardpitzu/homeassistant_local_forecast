@@ -17,13 +17,10 @@ from homeassistant.components.weather import (
 )
 from homeassistant.const import UnitOfPressure, UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.loader import async_get_integration
 
 from .bayesian_forecaster import HourForecast
-from .const import DOMAIN
 from .coordinator import (
     ForecastResult,
     LocalForecastConfigEntry,
@@ -63,9 +60,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Local Weather Forecast weather entity."""
-    integration = await async_get_integration(hass, DOMAIN)
-    sw_version = str(integration.version) if integration.version else None
-    async_add_entities([LocalForecastWeather(entry.runtime_data, sw_version)])
+    async_add_entities([LocalForecastWeather(entry.runtime_data)])
 
 
 class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherEntity):
@@ -78,18 +73,11 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
     _attr_supported_features = WeatherEntityFeature.FORECAST_HOURLY | WeatherEntityFeature.FORECAST_DAILY
 
-    def __init__(self, coordinator: LocalForecastCoordinator, sw_version: str | None) -> None:
+    def __init__(self, coordinator: LocalForecastCoordinator) -> None:
         """Bind the entity to its coordinator and device."""
         super().__init__(coordinator)
-        entry_id = coordinator.config_entry.entry_id
-        self._attr_unique_id = f"{entry_id}_weather"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry_id)},
-            name="Local Weather Forecast",
-            manufacturer="Local Weather Forecast",
-            model="Bayesian Forecaster",
-            sw_version=sw_version,
-        )
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_weather"
+        self._attr_device_info = coordinator.device_info
 
     @property
     def _data(self) -> ForecastResult | None:

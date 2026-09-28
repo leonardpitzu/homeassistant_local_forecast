@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.loader import async_get_integration
 
 from .const import CONF_ENABLE_MAP, DATA_MAP, DEFAULT_ENABLE_MAP, DOMAIN
 from .coordinator import LocalForecastConfigEntry, LocalForecastCoordinator
@@ -20,7 +21,8 @@ PLATFORMS: list[Platform] = [Platform.WEATHER, Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: LocalForecastConfigEntry) -> bool:
     """Set up Local Weather Forecast from a config entry."""
-    coordinator = LocalForecastCoordinator(hass, entry)
+    integration = await async_get_integration(hass, DOMAIN)
+    coordinator = LocalForecastCoordinator(hass, entry, str(integration.version) if integration.version else None)
     await coordinator.async_restore()
     await coordinator.async_config_entry_first_refresh()
     coordinator.async_track_sources(entry)

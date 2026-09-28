@@ -23,6 +23,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -150,7 +151,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
     config_entry: LocalForecastConfigEntry
 
-    def __init__(self, hass: HomeAssistant, entry: LocalForecastConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: LocalForecastConfigEntry, sw_version: str | None = None) -> None:
         """Set up the pipeline, its persistence and its refresh policy."""
         super().__init__(
             hass,
@@ -167,6 +168,16 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         # exist they are authoritative — merging them over data would resurrect
         # optional sensors the user has just cleared.
         self._config: dict[str, Any] = dict(entry.options or entry.data)
+
+        # Platforms set up concurrently; whichever registers the device first names
+        # it, and entity ids are minted from that name, so all must carry all of it.
+        self.device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Local Weather Forecast",
+            manufacturer="Local Weather Forecast",
+            model="Bayesian Forecaster",
+            sw_version=sw_version,
+        )
 
         # One tide for every consumer: trends subtract it, the forecast adds it back.
         self.tide = LocalTide(hass.config.latitude, hass.config.longitude)

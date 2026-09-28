@@ -21,7 +21,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import UnitOfPressure, UnitOfRatio
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -34,7 +33,6 @@ from .classifiers import (
     front_state,
     tendency_direction,
 )
-from .const import DOMAIN
 from .coordinator import (
     ForecastResult,
     LocalForecastConfigEntry,
@@ -245,7 +243,7 @@ class LocalForecastSensor(CoordinatorEntity[LocalForecastCoordinator], SensorEnt
         self.entity_description = description
         entry_id = coordinator.config_entry.entry_id
         self._attr_unique_id = f"{entry_id}_{description.key}"
-        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry_id)})
+        self._attr_device_info = coordinator.device_info
 
     @property
     def available(self) -> bool:
