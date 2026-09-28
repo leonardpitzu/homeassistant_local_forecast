@@ -157,17 +157,28 @@ Nothing is tuned to a place - the model learns the station it runs on:
 - Fits run on 3-hour changes, which weather does not bias toward any hour,
   and shrink toward a world-average prior, so a new install or a move starts
   sensible and adapts on its own.  Time is local solar time from longitude.
+- **Whatever shape is left** - a sea breeze, a valley wind, a 6-hour wave -
+  is caught in 24 solar-hour bins of the residual against a centred 24-hour
+  mean (~20-day memory).  They start at zero, so a new install begins as the
+  physics alone; a day with a hole in it, or a front through the window, is
+  skipped.
 
-Scored hour by hour on 6.2 years of data from three stations (each hour is
-predicted before the model may learn from it), the daily cycle left in the
-3-hour tendency, averaged per calendar month:
+Scored hour by hour (each hour is predicted before the model may learn from
+it) at ten sites on four continents - Atlantic and Black Sea coast, plain,
+two alpine valleys, high plains, desert, the southern hemisphere; NOAA ISD
+2019-2023 - and on 6.2 years from three Brasov stations, the daily cycle left
+in the 3-hour tendency, averaged per calendar month:
 
-| Tide model | Leak (hPa/h) |
-|---|---|
-| None | 0.183 |
-| Fixed climatology | 0.104 |
-| Learned, fixed-shape S1 + S2 | 0.055 |
-| **Learned, temperature-driven S1 + S2 + S3** | **0.029** |
+| Tide model | Leak, mean of 10 sites (hPa/h) | Brasov (hPa/h) |
+|---|---|---|
+| None | - | 0.183 |
+| Fixed climatology | 0.215 | 0.104 |
+| Learned, temperature-driven S1 + S2 + S3 | 0.049 | 0.029 |
+| **+ residual bins** | **0.033** | **0.020** |
+
+The bins improve every one of the ten sites.  A fixed climatology is worst
+where it matters most: in the alpine valleys it leaves 0.43 hPa/h, the
+learned model 0.04.
 
 The same fit also learns much of a barometer's own thermal fault: over the
 spring one of those stations' sensors was failing with a fake 3 hPa daily
@@ -814,7 +825,8 @@ Debug output includes sensor values after unit conversion, current weather state
 **Settings** -> **Devices & Services** -> **Local Weather Forecast** -> **⋮** ->
 **Download diagnostics** returns what the atmospheric tide has learned: the
 S1 / S2 / S3 amplitudes and peak solar hours, the station's daily temperature
-cycle, the site gain and lag, and how many days of evidence it holds.
+cycle, the site gain and lag, the residual by solar hour, and how many days of
+evidence it holds.
 
 ---
 

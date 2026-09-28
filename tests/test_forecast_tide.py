@@ -24,24 +24,26 @@ W = 2 * math.pi
 START = 1_790_000_000.0
 
 
-def _station(days, *, gain, t_amp, lon=BRASOV_LON, seed=1, start=START):
-    """Hourly (ts, pressure, temperature, true tide) from a synthetic station.
+def _station(days, *, gain, t_amp, lon=BRASOV_LON, seed=1, start=START, extra=None, spacing_s=3600.0):
+    """(ts, pressure, temperature, true tide) from a synthetic station.
 
     Pressure S1 is the temperature cycle, inverted and 2 h late, times ``gain``;
-    S2 and S3 are fixed; weather is a random walk that knows no hour of day.
+    S2 and S3 are fixed; ``extra(solar_hour)`` adds a shape none of those can
+    make; weather is a random walk that knows no hour of day.
     """
     rng = random.Random(seed)
     weather = 0.0
-    for i in range(int(days * 24)):
-        ts = start + i * 3600.0
+    for i in range(int(days * 86400 / spacing_s)):
+        ts = start + i * spacing_s
         h = solar_hour(ts, lon)
-        amp = t_amp(i / 24.0) if callable(t_amp) else t_amp
+        amp = t_amp(ts / 86400.0 - start / 86400.0) if callable(t_amp) else t_amp
         temperature = 10.0 + amp * math.cos(W * (h - 15.0) / 24.0) + rng.gauss(0, 0.3)
-        weather += rng.gauss(0, 0.3)
+        weather += rng.gauss(0, 0.3 * math.sqrt(spacing_s / 3600.0))
         tide = (
             -gain * amp * math.cos(W * (h - 17.0) / 24.0)
             + 0.5 * math.cos(W * (h - 9.5) / 12.0)
             + 0.15 * math.cos(W * (h - 2.0) / 8.0)
+            + (extra(h) if extra else 0.0)
         )
         yield ts, 1015.0 + weather + tide, temperature, tide
 
@@ -61,6 +63,16 @@ def _trained(days, **kw):
         tide.learn(ts, p, t)
         last.append(sample)
     return tide, last[-48:]
+
+
+def _sea_breeze(h):
+    """A 0.8 hPa afternoon dip over two hours: no 24/12/8 h wave draws it."""
+    return -0.8 * math.exp(-(((h - 15.0) / 1.0) ** 2))
+
+
+class _PhysicsOnly:
+    def __init__(self, tide):
+        self.hpa_at = tide._physics_hpa
 
 
 class TestS2Amplitude:
@@ -97,13 +109,15 @@ class TestPrior:
         assert math.isclose(described["s2_hpa"]["peak_solar_hour"], 10.0, abs_tol=0.01)
         assert described["s1_hpa"]["amplitude"] == 0.0  # no temperature cycle seen yet
         assert described["learned_days"] == 0.0
+        assert described["residual_by_solar_hour_hpa"] == [0.0] * 24  # starts as the physics alone
 
 
 class TestLearning:
     def test_learns_the_station_it_runs_on(self) -> None:
         tide, recent = _trained(30, gain=0.12, t_amp=6.0)
-        # Across seeds the learned tide lands 0.05-0.12 hPa from the truth; the prior is >0.4 off.
-        assert _rms_error(tide, recent) < 0.15
+        # Across seeds 0.08-0.16 hPa from the truth: the physics lands 0.05-0.11 and the
+        # residual bins, with nothing real to learn here, carry some weather.  The prior is >0.4 off.
+        assert _rms_error(tide, recent) < 0.2
         assert _rms_error(LocalTide(BRASOV_LAT, BRASOV_LON), recent) > 0.4
         described = tide.describe(recent[-1][0])
         assert math.isclose(described["site_gain_hpa_per_k"], 0.12, rel_tol=0.25)
@@ -144,6 +158,57 @@ class TestLearning:
         assert tide.dump()["pressure"] == before["pressure"]
 
 
+class TestResidual:
+    # Across seeds the bins cut the error to 0.65-0.81 of the physics alone; what
+    # is left is the weather they average over.
+
+    def test_catches_a_shape_the_physics_cannot_draw(self) -> None:
+        tide, recent = _trained(60, gain=0.12, t_amp=6.0, extra=_sea_breeze)
+        assert _rms_error(tide, recent) < 0.85 * _rms_error(_PhysicsOnly(tide), recent)
+        residual = tide.describe(recent[-1][0])["residual_by_solar_hour_hpa"]
+        assert min(range(24), key=residual.__getitem__) == 15
+
+    def test_learns_at_the_live_sample_spacing(self) -> None:
+        """PressureHistory stores ~54 min apart at a 30 s refresh, ~55 min at 5 min."""
+        for spacing in (54 * 60.0, 55 * 60.0):
+            tide, recent = _trained(60, gain=0.12, t_amp=6.0, extra=_sea_breeze, spacing_s=spacing)
+            assert _rms_error(tide, recent) < 0.85 * _rms_error(_PhysicsOnly(tide), recent)
+            residual = tide.describe(recent[-1][0])["residual_by_solar_hour_hpa"]
+            assert all(residual)  # every solar hour learned
+            assert min(range(24), key=residual.__getitem__) == 15
+
+    def test_a_hole_in_the_day_pauses_it(self) -> None:
+        tide = LocalTide(BRASOV_LAT, BRASOV_LON)
+        samples = list(_station(4, gain=0.12, t_amp=6.0, extra=_sea_breeze))
+        for ts, p, t, _ in samples[:48]:
+            tide.learn(ts, p, t)
+        before = tide.dump()["residual"]
+        # Three hours missing: no day window is whole again until a full day later.
+        for ts, p, t, _ in samples[51:74]:
+            tide.learn(ts, p, t)
+        assert tide.dump()["residual"] == before
+        for ts, p, t, _ in samples[74:78]:
+            tide.learn(ts, p, t)
+        assert tide.dump()["residual"] != before
+
+    def test_a_passing_front_is_not_learned(self) -> None:
+        """A 6 hPa spike 12 h back, against the day centred on it, is weather."""
+        trained, _ = _trained(3, gain=0.12, t_amp=6.0)
+        state = trained.dump()
+        ts, p, t = state["recent"][-1]
+
+        def residual_after(spike):
+            recent = [list(r) for r in state["recent"]]
+            recent[-12][1] += spike
+            tide = LocalTide(BRASOV_LAT, BRASOV_LON)
+            tide.load({**state, "recent": recent})
+            tide.learn(ts + 3600.0, p, t)
+            return tide.dump()["residual"]
+
+        assert residual_after(0.0) != state["residual"]
+        assert residual_after(6.0) == state["residual"]
+
+
 class TestPersistence:
     def test_round_trip_keeps_what_was_learned(self) -> None:
         tide, recent = _trained(20, gain=0.12, t_amp=6.0)
@@ -161,6 +226,9 @@ class TestPersistence:
             {"pressure": {"a": [[1.0]], "b": [1.0], "last": None, "evidence": 1.0}},
             {"temperature": {"a": "nope"}},
             {"recent": [["a", 1, 2], [1.0]]},
+            {"residual": [1.0] * 23, "residual_last": None},
+            {"residual": ["x"] * 24, "residual_last": None},
+            {"residual": [math.nan] * 24, "residual_last": None},
         ):
             tide = LocalTide(BRASOV_LAT, BRASOV_LON)
             tide.load(junk)

@@ -17,10 +17,15 @@ place; the model learns the station it runs on:
   - Fits run on 3-hour changes, which weather does not bias toward any hour,
     and shrink toward a world-average prior, so a new install or a move starts
     sensible and adapts on its own.
+  - Whatever shape that leaves (a sea breeze, a valley wind, S4) is caught in
+    24 solar-hour bins of the residual against a centred 24 h mean.  They start
+    at zero, so the model begins as the physics alone.
 
-Scored causally on 6.2 years of hourly data (2014-2021, three stations), the
-daily cycle left in the 3 h tendency falls from 0.183 hPa/h untouched, and
-0.104 under a fixed climatology, to 0.029.
+Scored causally at ten sites on four continents (2019-2023: coast, plain,
+alpine valley, high plains, desert, both hemispheres) and on 6.2 years at
+Brasov, the daily cycle left in the 3 h tendency averages 0.215 hPa/h under a
+fixed climatology, 0.049 with the physics alone and 0.033 with the bins; it
+improves at every site.
 
 Time is local solar time from longitude, never the timezone.  Pure Python.
 """
@@ -56,6 +61,16 @@ PAIR_SPAN_S = 3 * 3600.0
 PAIR_TOLERANCE_S = 1800.0
 # A 3 h change beyond this is a sensor fault, not anything a tide explains.
 MAX_PRESSURE_CHANGE_HPA = 15.0
+
+# Residual bins: one update per bin per day, so 0.05 is a ~20-day memory.
+RESIDUAL_ALPHA = 0.05
+RESIDUAL_WINDOW_S = 24 * 3600.0
+# The centred mean needs a whole day with no hole in it.
+RESIDUAL_MAX_GAP_S = 5400.0
+# A residual this large is a front passing through the window, not a tide.
+MAX_RESIDUAL_HPA = 4.0
+# Samples kept: the residual window plus the hour the 3 h pairing may reach past it.
+_KEEP_S = RESIDUAL_WINDOW_S + 3600.0
 
 
 def s2_amplitude(latitude_deg: float | None) -> float:
@@ -177,34 +192,73 @@ class LocalTide:
             PRESSURE_MEMORY_DAYS,
             PRESSURE_PRIOR_DAYS,
         )
-        self._recent: deque[tuple[float, float, float]] = deque(maxlen=6)
+        self._residual = [0.0] * 24  # hPa at each whole solar hour
+        self._residual_last: float | None = None  # centre of the last residual folded
+        # Hourly samples (~55 min apart), pruned by age rather than count.
+        self._recent: deque[tuple[float, float, float]] = deque(maxlen=64)
 
     def _features(self, timestamp: float) -> tuple[float, ...]:
         c1, s1, c2, s2, c3, s3 = _harmonics(timestamp, self._longitude)
         a, b = self._temperature.coef[0], self._temperature.coef[1]
         return (a * c1 + b * s1, a * s1 - b * c1, c2, s2, c3, s3)
 
+    def _physics_hpa(self, timestamp: float) -> float:
+        return sum(c * f for c, f in zip(self._pressure.coef, self._features(timestamp), strict=True))
+
+    def _residual_hpa(self, timestamp: float) -> float:
+        h = solar_hour(timestamp, self._longitude)
+        i = int(h)
+        f = h - i
+        return (1.0 - f) * self._residual[i % 24] + f * self._residual[(i + 1) % 24]
+
     def hpa_at(self, timestamp: float) -> float:
         """Tide in hPa at an epoch timestamp, ready to subtract."""
-        return sum(c * f for c, f in zip(self._pressure.coef, self._features(timestamp), strict=True))
+        return self._physics_hpa(timestamp) + self._residual_hpa(timestamp)
 
     def learn(self, timestamp: float, pressure_hpa: float, temperature_c: float) -> None:
         """Learn from an hourly sample, paired with the one ~3 h before it."""
+        sample = (timestamp, pressure_hpa, temperature_c)
         target = timestamp - PAIR_SPAN_S
         partner = min(self._recent, key=lambda r: abs(r[0] - target), default=None)
-        self._recent.append((timestamp, pressure_hpa, temperature_c))
-        if partner is None or abs(partner[0] - target) > PAIR_TOLERANCE_S:
-            return
-        then, pressure_then, temperature_then = partner
-        change = pressure_hpa - pressure_then
+        self._recent.append(sample)
+        while timestamp - self._recent[0][0] > _KEEP_S:
+            self._recent.popleft()
+        if partner is not None and abs(partner[0] - target) <= PAIR_TOLERANCE_S:
+            self._learn_change(sample, partner)
+        self._learn_residual(timestamp)
+
+    def _learn_change(self, sample: tuple[float, float, float], partner: tuple[float, float, float]) -> None:
+        """Fit the physics on one 3 h change."""
+        (now, pressure, temperature), (then, pressure_then, temperature_then) = sample, partner
+        change = pressure - pressure_then
         if abs(change) > MAX_PRESSURE_CHANGE_HPA:
             return
         # Pressure first, on the temperature cycle as known before this hour.
-        x = [a - b for a, b in zip(self._features(timestamp), self._features(then), strict=True)]
-        self._pressure.learn(timestamp, x, change)
-        now_h, then_h = _harmonics(timestamp, self._longitude), _harmonics(then, self._longitude)
+        x = [a - b for a, b in zip(self._features(now), self._features(then), strict=True)]
+        self._pressure.learn(now, x, change)
+        now_h, then_h = _harmonics(now, self._longitude), _harmonics(then, self._longitude)
         x_t = [a - b for a, b in zip(now_h[:4], then_h[:4], strict=True)]
-        self._temperature.learn(timestamp, x_t, temperature_c - temperature_then)
+        self._temperature.learn(now, x_t, temperature - temperature_then)
+
+    def _learn_residual(self, now: float) -> None:
+        """Fold the sample 12 h back against the mean of the day centred on it."""
+        day = [r for r in self._recent if now - r[0] <= RESIDUAL_WINDOW_S]
+        times = [r[0] for r in day]
+        if times[-1] - times[0] < RESIDUAL_WINDOW_S - RESIDUAL_MAX_GAP_S or any(
+            b - a > RESIDUAL_MAX_GAP_S for a, b in zip(times, times[1:], strict=False)
+        ):
+            return
+        centre, pressure, _ = min(day, key=lambda r: abs(r[0] - (now - RESIDUAL_WINDOW_S / 2)))
+        if abs(centre - (now - RESIDUAL_WINDOW_S / 2)) > PAIR_TOLERANCE_S:
+            return
+        if self._residual_last is not None and centre <= self._residual_last:
+            return
+        self._residual_last = centre
+        r = pressure - sum(p for _, p, _ in day) / len(day) - self._physics_hpa(centre)
+        if abs(r) > MAX_RESIDUAL_HPA:
+            return
+        i = round(solar_hour(centre, self._longitude)) % 24
+        self._residual[i] += RESIDUAL_ALPHA * (r - self._residual[i])
 
     def describe(self, timestamp: float) -> dict[str, Any]:
         """What has been learned, for diagnostics."""
@@ -219,12 +273,15 @@ class LocalTide:
             "site_gain_hpa_per_k": round(math.hypot(g1, g2), 4),
             "trough_after_temperature_peak_h": round((math.atan2(-g2, -g1) / _W * 24.0) % 24.0, 2),
             "learned_days": round(self._pressure.evidence / 24.0, 1),
+            "residual_by_solar_hour_hpa": [round(v, 3) for v in self._residual],
         }
 
     def dump(self) -> dict[str, Any]:
         return {
             "temperature": self._temperature.dump(),
             "pressure": self._pressure.dump(),
+            "residual": list(self._residual),
+            "residual_last": self._residual_last,
             "recent": [list(r) for r in self._recent],
         }
 
@@ -234,6 +291,15 @@ class LocalTide:
             return
         self._temperature.load(data.get("temperature"))
         self._pressure.load(data.get("pressure"))
+        try:
+            residual = [float(v) for v in data["residual"]]
+            last = data["residual_last"]
+            last = None if last is None else float(last)
+        except (KeyError, TypeError, ValueError):
+            pass
+        else:
+            if len(residual) == 24 and all(map(math.isfinite, residual)) and (last is None or math.isfinite(last)):
+                self._residual, self._residual_last = residual, last
         for item in data.get("recent") or []:
             try:
                 ts, p, t = (float(v) for v in item)
