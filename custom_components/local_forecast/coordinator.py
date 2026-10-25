@@ -1,14 +1,19 @@
 """Forecast engine for Local Weather Forecast.
 
-Owns the whole sensor -> StateEstimator -> BayesianForecaster pipeline and
-publishes one immutable result per run.  Entities render that result and
-nothing else; no entity reaches into the estimator.
+Owns the whole pipeline and publishes one immutable result per run:
+
+  sensors -> StateEstimator   current conditions, trends, fronts
+          -> HourlyHistory    30 days of the station's own hourly means
+          -> Forecaster       trained models, evaluated once per closed hour,
+                              corrected by what the station has verified
+
+Entities render that result and nothing else.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from functools import partial
 import logging
 import time
@@ -34,7 +39,6 @@ from homeassistant.util.unit_conversion import (
     TemperatureConverter,
 )
 
-from .bayesian_forecaster import BayesianForecaster, HourForecast
 from .const import (
     CONF_ELEVATION,
     CONF_HUMIDITY_SENSOR,
@@ -55,11 +59,16 @@ from .const import (
     ISA_SEA_LEVEL_TEMP_K,
     LAPSE_RATE,
     PRESSURE_RELATIVE,
+    S_CLOUDY,
+    S_FOG,
     STORAGE_VERSION,
     UPDATE_DEBOUNCE_SECONDS,
     UPDATE_INTERVAL_MINUTES,
 )
-from .physics_models import HumidityModel, PressureModel, TemperatureModel, WindModel
+from .features import HISTORY_HOURS
+from .forecast import DayForecast, Forecaster, HourForecast, Sensors
+from .history import HourlyHistory, issue_hour
+from .model import ModelSet
 from .pressure_history import PressureHistory
 from .state_estimator import SensorReading, StateEstimator
 from .tide import LocalTide
@@ -144,6 +153,9 @@ class ForecastResult:
     wind_bearing: float | None
     dew_point: float | None
     hourly_dicts: list[dict[str, Any]] = field(default_factory=list)
+    daily: list[DayForecast] = field(default_factory=list)
+    # (high, low) observed so far today, for the daily card's "today".
+    today_observed: tuple[float, float] | None = None
 
 
 class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
@@ -175,18 +187,26 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             identifiers={(DOMAIN, entry.entry_id)},
             name="Local Weather Forecast",
             manufacturer="Local Weather Forecast",
-            model="Bayesian Forecaster",
+            model="Trained forecaster",
             sw_version=sw_version,
         )
 
         # One tide for every consumer: trends subtract it, the forecast adds it back.
         self.tide = LocalTide(hass.config.latitude, hass.config.longitude)
         self._estimator = StateEstimator(tide_hpa=self.tide.hpa_at)
-        self._forecaster = BayesianForecaster()
         self._has_data = False
 
         self.pressure_history = PressureHistory(tide_hpa=self.tide.hpa_at)
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.pressure")
+
+        # The trained forecaster reads the station's own hourly history; both it
+        # and the self-correction it has learned survive restarts.
+        self.history = HourlyHistory()
+        self.forecaster: Forecaster | None = None
+        self._forecast_store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.forecast"
+        )
+        self._local_date: int | None = None
 
         # Sample timestamps must be monotonic — the history buffer is bisected
         # on them — but also comparable to recorder timestamps, so anchor a
@@ -199,10 +219,16 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
     # ------------------------------------------------------------------
 
     async def async_restore(self) -> None:
-        """Restore the persisted sea-level pressure buffer and the learned tide."""
+        """Load the models and restore everything learned before a restart."""
         if (saved := await self._store.async_load()) and isinstance(saved, dict):
             self.pressure_history.load(saved.get("samples", []))
             self.tide.load(saved.get("tide"))
+        models = await self.hass.async_add_executor_job(ModelSet.load)
+        cfg = self.hass.config
+        self.forecaster = Forecaster(models, cfg.latitude, cfg.longitude, float(self._config.get(CONF_ELEVATION, 0)))
+        if (saved := await self._forecast_store.async_load()) and isinstance(saved, dict):
+            self.history.load(saved.get("history"))
+            self.forecaster.load(saved.get("recal"))
 
     @callback
     def async_track_sources(self, entry: ConfigEntry) -> None:
@@ -235,6 +261,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         self._ingest_sensors()
         if not self._has_data:
             return None
+        await self._async_issue_if_due()
         return self._run_forecast()
 
     # ------------------------------------------------------------------
@@ -242,15 +269,68 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
     # ------------------------------------------------------------------
 
     async def _async_backfill_history(self) -> None:
-        """Seed the estimator from the recorder so trends are live at boot.
+        """Seed the estimator and the hourly history from the recorder.
 
         Pressure tendency is the single most important input; without this
-        it reads zero for the first hour after every restart.
+        it reads zero for the first hour after every restart.  The hourly
+        means give a fresh install weeks of history instead of none.
         """
         try:
             await self._async_backfill()
         except Exception:  # never let a cold-start optimisation break setup
             _LOGGER.debug("Recorder backfill failed", exc_info=True)
+        try:
+            await self._async_seed_hourly()
+        except Exception:
+            _LOGGER.debug("Recorder statistics seeding failed", exc_info=True)
+
+    async def _async_seed_hourly(self) -> None:
+        """Fill hours the history has never seen from long-term statistics."""
+        if "recorder" not in self.hass.config.components:
+            return
+        from homeassistant.components.recorder import get_instance, statistics
+
+        keys = {
+            "t": CONF_TEMPERATURE_SENSOR,
+            "rh": CONF_HUMIDITY_SENSOR,
+            "ws": CONF_WIND_SPEED_SENSOR,
+            "p": CONF_PRESSURE_SENSOR,
+            "rain": CONF_RAIN_RATE_SENSOR,
+        }
+        ids = {name: self._config[key] for name, key in keys.items() if self._config.get(key)}
+        if not ids:
+            return
+        end = dt_util.utcnow()
+        start = end - timedelta(hours=HISTORY_HOURS)
+        stats = await get_instance(self.hass).async_add_executor_job(
+            statistics.statistics_during_period,
+            self.hass,
+            start,
+            end,
+            set(ids.values()),
+            "hour",
+            None,
+            {"mean"},
+        )
+        rows: dict[int, dict[str, float | None]] = {}
+        for name, sid in ids.items():
+            live = self.hass.states.get(sid)
+            unit = live.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if live else None
+            for row in stats.get(sid, []):
+                value = self._parse(row.get("mean"), unit, keys[name])
+                if value is None:
+                    continue
+                if name == "p":
+                    value = self._to_sea_level(value)
+                    if not _SEA_LEVEL_MIN <= value <= _SEA_LEVEL_MAX:
+                        continue
+                start_ts = row["start"]
+                if isinstance(start_ts, datetime):
+                    start_ts = start_ts.timestamp()
+                # A statistic covers [start, start + 1 h); it seeds the hour it ends on.
+                rows.setdefault(int(start_ts) + 3600, {})[name] = value
+        added = self.history.seed(sorted(rows.items()))
+        _LOGGER.debug("Seeded %d hours of history from statistics", added)
 
     async def _async_backfill(self) -> None:
         if "recorder" not in self.hass.config.components:
@@ -365,20 +445,32 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             _LOGGER.debug("Rejecting sea-level pressure %.1f hPa", pressure)
             return False
 
-        self._estimator.update(
-            SensorReading(
-                timestamp=self._now_ts(),
-                pressure_hpa=pressure,
-                temperature_c=temperature,
-                humidity_pct=self._read_float(CONF_HUMIDITY_SENSOR),
-                wind_speed_ms=self._read_float(CONF_WIND_SPEED_SENSOR),
-                wind_direction_deg=self._read_float(CONF_WIND_DIRECTION_SENSOR),
-                solar_radiation_wm2=self._read_float(CONF_SOLAR_RADIATION_SENSOR),
-                rain_rate_mmh=self._read_float(CONF_RAIN_RATE_SENSOR),
-            )
+        reading = SensorReading(
+            timestamp=self._now_ts(),
+            pressure_hpa=pressure,
+            temperature_c=temperature,
+            humidity_pct=self._read_float(CONF_HUMIDITY_SENSOR),
+            wind_speed_ms=self._read_float(CONF_WIND_SPEED_SENSOR),
+            wind_direction_deg=self._read_float(CONF_WIND_DIRECTION_SENSOR),
+            solar_radiation_wm2=self._read_float(CONF_SOLAR_RADIATION_SENSOR),
+            rain_rate_mmh=self._read_float(CONF_RAIN_RATE_SENSOR),
         )
+        self._estimator.update(reading)
+        # Wall clock: hours are calendar hours, shared with the recorder.
+        self._add_to_history(time.time(), reading)
         self._has_data = True
         return True
+
+    def _add_to_history(self, ts: float, r: SensorReading) -> None:
+        self.history.add(
+            ts,
+            temperature=r.temperature_c,
+            humidity=r.humidity_pct,
+            wind_speed=r.wind_speed_ms,
+            wind_direction=r.wind_direction_deg,
+            pressure=r.pressure_hpa,
+            rain_rate=r.rain_rate_mmh,
+        )
 
     def _to_sea_level(self, pressure: float) -> float:
         """Convert station pressure (QFE) to QNH through the standard atmosphere."""
@@ -431,25 +523,93 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
     #  Forecast
     # ------------------------------------------------------------------
 
+    def _sensors(self) -> Sensors:
+        return Sensors(
+            humidity=self.has_source(CONF_HUMIDITY_SENSOR),
+            wind=self.has_source(CONF_WIND_SPEED_SENSOR),
+            wind_direction=self.has_source(CONF_WIND_DIRECTION_SENSOR),
+            rain=self.has_source(CONF_RAIN_RATE_SENSOR),
+        )
+
+    async def _async_issue_if_due(self) -> None:
+        """Evaluate the models once per closed hour (in an executor)."""
+        forecaster = self.forecaster
+        if forecaster is None:
+            return
+        now = time.time()
+        issue = issue_hour(now)
+        if forecaster.issue is not None and forecaster.issue.ts == issue:
+            return
+        if not self.history.has(issue):
+            # The newest closed hour has no readings (a fresh install, or the
+            # first minutes after a long outage): the current state stands in
+            # for it, so there is always a forecast to show.
+            s = self._estimator.state
+            self._add_to_history(
+                issue,
+                SensorReading(
+                    timestamp=issue,
+                    pressure_hpa=s.pressure,
+                    temperature_c=s.temperature,
+                    humidity_pct=s.humidity if self.has_source(CONF_HUMIDITY_SENSOR) else None,
+                    wind_speed_ms=s.wind_speed if self.has_source(CONF_WIND_SPEED_SENSOR) else None,
+                    wind_direction_deg=s.wind_direction if self.has_source(CONF_WIND_DIRECTION_SENSOR) else None,
+                    rain_rate_mmh=s.rain_rate if self.has_source(CONF_RAIN_RATE_SENSOR) else None,
+                ),
+            )
+        local = dt_util.as_local(datetime.fromtimestamp(issue, UTC))
+        local_date = local.date().toordinal()
+        midnight = dt_util.start_of_local_day(local.date() + timedelta(days=1))
+        hours_to_midnight = (midnight - local).total_seconds() / 3600.0
+        finished = self._finished_days(local_date)
+        sensors = self._sensors()
+
+        def work() -> None:
+            forecaster.verify(self.history, issue, sensors)
+            for date, high, low, wet in finished:
+                forecaster.verify_day(date, high, low, wet if sensors.rain else None)
+            forecaster.run_issue(self.history, issue, self.tide.hpa_at, hours_to_midnight, local_date, sensors)
+
+        await self.hass.async_add_executor_job(work)
+        self._local_date = local_date
+        self._forecast_store.async_delay_save(lambda: {"history": self.history.dump(), "recal": forecaster.dump()}, 300)
+
+    def _finished_days(self, local_date: int) -> list[tuple[int, float, float, float | None]]:
+        """Calendar days completed since the last issue: (date, high, low, wet)."""
+        if self._local_date is None or local_date <= self._local_date:
+            return []
+        out = []
+        for date in range(self._local_date, local_date):
+            day = datetime.fromordinal(date).date()
+            start = int(dt_util.start_of_local_day(day).timestamp())
+            end = int(dt_util.start_of_local_day(day + timedelta(days=1)).timestamp())
+            # An hour belongs to the day it ends in, as in training.
+            temps = [t for _h, t in self.history.observed(start + 1, end + 1)]
+            if len(temps) < 20:
+                continue
+            series = self.history.series(issue_hour(end + 1800))
+            hours = (end - start) // 3600
+            wet_vals = [w for w in series["wet"][-hours:] if w == w]
+            wet = (1.0 if sum(wet_vals) >= 2 else 0.0) if len(wet_vals) >= 20 else None
+            out.append((date, max(temps), min(temps), wet))
+        return out
+
     def _run_forecast(self) -> ForecastResult:
-        """Classify current state, build physics models, run Bayesian forecast."""
+        """Current conditions from the estimator, the forecast from the models."""
         s = self._estimator.state
         s.has_humidity = self.has_source(CONF_HUMIDITY_SENSOR)
         s.has_wind = self.has_source(CONF_WIND_SPEED_SENSOR)
 
-        sunrise_h, sunset_h = self._sun_hours()
         sun_el = self._sun_elevation()
-        now_local = dt_util.now()
-        now_h = now_local.hour + now_local.minute / 60.0
         sun = self.hass.states.get("sun.sun")
         # sun.sun already answers this correctly at every latitude and across
-        # midnight; re-deriving it from decimal hours does not.
-        s.is_night = sun.state == "below_horizon" if sun is not None else not (sunrise_h <= now_h < sunset_h)
+        # midnight; the elevation is the fallback when it is missing.
+        s.is_night = sun.state == "below_horizon" if sun is not None else sun_el < -0.833
 
-        # Cloud fraction: computed once and reused for both the classifier
-        # (section 7 hysteresis) and the temperature model below.
         cloud = self._estimator.cloud_fraction(sun_el)
         current_idx = self._estimator.classify(sun_el, cloud_fraction=cloud)
+        if current_idx == S_FOG and self.forecaster is not None and self.forecaster.fog_unlikely():
+            current_idx = S_CLOUDY
 
         _LOGGER.debug(
             "Pipeline: P=%.1f dp/dt=%.2f T=%.1f RH=%.0f wind=%.1f state=%s night=%s",
@@ -462,47 +622,16 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             s.is_night,
         )
 
-        temp_model = TemperatureModel(
-            current_temp=s.temperature,
-            dt_dt=s.dt_dt,
-            humidity=s.humidity,
-            wind_speed=s.wind_speed,
-            cloud_fraction=cloud,
-            sunrise_hour=sunrise_h,
-            sunset_hour=sunset_h,
-            current_hour=now_h,
-            latitude=self.hass.config.latitude,
-        )
-        now_ts = now_local.timestamp()
-        hourly = self._forecaster.forecast(
-            current_state_idx=current_idx,
-            smoothed=s,
-            hours=FORECAST_HOURS,
-            sunrise_hour=sunrise_h,
-            sunset_hour=sunset_h,
-            current_hour=now_h,
-            predict_temperature=temp_model,
-            predict_pressure=PressureModel(
-                s.pressure - self.tide.hpa_at(now_ts),
-                s.dp_dt,
-                tide=lambda h: self.tide.hpa_at(now_ts + h * 3600.0),
-            ),
-            predict_humidity=HumidityModel(s.humidity, s.temperature, temp_model),
-            predict_wind=WindModel(s.wind_speed, s.wind_direction, s.dp_dt),
-        )
-        # The physics runs on placeholders for missing channels; publishing
-        # them would present those placeholders as a forecast.
-        unmeasured = {
-            name: None
-            for name, key in (
-                ("humidity", CONF_HUMIDITY_SENSOR),
-                ("wind_speed", CONF_WIND_SPEED_SENSOR),
-                ("wind_bearing", CONF_WIND_DIRECTION_SENSOR),
+        now_local = dt_util.now()
+        sensors = self._sensors()
+        bearing = round((s.wind_direction + 360) % 360) if sensors.wind_direction else None
+        hourly: list[HourForecast] = []
+        daily: list[DayForecast] = []
+        if self.forecaster is not None:
+            hourly = self.forecaster.hours(now_local.timestamp(), self.tide.hpa_at, sensors, bearing, FORECAST_HOURS)
+            daily = self.forecaster.days(
+                sensors, s.humidity if sensors.humidity else None, now_local.date().toordinal()
             )
-            if not self.has_source(key)
-        }
-        if unmeasured:
-            hourly = [replace(hf, **unmeasured) for hf in hourly]
 
         if hourly:
             h1 = hourly[0]
@@ -516,6 +645,9 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
         self._record_pressure(s.pressure, s.temperature)
 
+        midnight = int(dt_util.start_of_local_day(now_local).timestamp())
+        seen = [t for _h, t in self.history.observed(midnight + 1, int(now_local.timestamp()) + 1)]
+
         return ForecastResult(
             generated=now_local,
             condition=HA_CONDITIONS[current_idx],
@@ -524,13 +656,13 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             temperature=round(s.temperature, 1),
             apparent_temperature=self._apparent_temperature(),
             pressure=round(s.pressure, 1),
-            humidity=(round(s.humidity) if self.has_source(CONF_HUMIDITY_SENSOR) else None),
-            wind_speed=(round(s.wind_speed, 1) if self.has_source(CONF_WIND_SPEED_SENSOR) else None),
-            wind_bearing=(
-                round((s.wind_direction + 360) % 360) if self.has_source(CONF_WIND_DIRECTION_SENSOR) else None
-            ),
-            dew_point=(s.dew_point if self.has_source(CONF_HUMIDITY_SENSOR) else None),
+            humidity=(round(s.humidity) if sensors.humidity else None),
+            wind_speed=(round(s.wind_speed, 1) if sensors.wind else None),
+            wind_bearing=bearing,
+            dew_point=(s.dew_point if sensors.humidity else None),
             hourly_dicts=_hourly_dicts(hourly, now_local),
+            daily=daily,
+            today_observed=(round(max(seen), 1), round(min(seen), 1)) if seen else None,
         )
 
     def _record_pressure(self, pressure: float, temperature: float) -> None:
@@ -618,23 +750,6 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             except (ValueError, TypeError):
                 pass
         return 45.0  # fallback: assume mid-sky
-
-    def _sun_hours(self) -> tuple[float, float]:
-        """Return (sunrise_hour, sunset_hour) in local decimal hours."""
-        if sun := self.hass.states.get("sun.sun"):
-            try:
-                rising = dt_util.parse_datetime(sun.attributes.get("next_rising", ""))
-                setting = dt_util.parse_datetime(sun.attributes.get("next_setting", ""))
-                if rising and setting:
-                    rise_local = dt_util.as_local(rising)
-                    set_local = dt_util.as_local(setting)
-                    return (
-                        rise_local.hour + rise_local.minute / 60.0,
-                        set_local.hour + set_local.minute / 60.0,
-                    )
-            except (ValueError, TypeError):
-                pass
-        return (6.0, 20.0)
 
 
 def _hourly_dicts(hourly: list[HourForecast], generated: datetime) -> list[dict[str, Any]]:

@@ -704,7 +704,7 @@ class TestWindDirectionSmoothing:
 
 
 # ===================================================================
-#  Rates that feed the frontal flags and Bayesian evidence
+#  Rates that feed the frontal flags
 # ===================================================================
 
 

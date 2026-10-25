@@ -59,7 +59,7 @@ ISA_SEA_LEVEL_TEMP_K: Final = 288.15
 #  Internal weather states
 #
 #  These map 1:1 to the HA condition strings that drive dashboard icons.
-#  Order matters — the index is used in the Bayesian transition matrix.
+#  Order matters — the index is the condition id used by the state estimator.
 #
 #  HA icon reference (what your family actually sees on cards/phone/tablet):
 #    sunny            → ☀️   bright sun
@@ -145,7 +145,7 @@ HISTORY_MAX_RECORDS: Final = 2000
 HISTORY_SECONDS: Final = 4 * 3600.0
 
 # --- Forecast horizon ---
-FORECAST_HOURS: Final = 12
+FORECAST_HOURS: Final = 24
 
 # ---------------------------------------------------------------------------
 #  Optional satellite map view (Leaflet over EUMETView WMS)

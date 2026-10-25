@@ -1,27 +1,31 @@
 # Local Weather Forecast
 
-A physics-based, fully local weather forecaster for Home Assistant.  Reads
-your own sensors, applies Bayesian state estimation and atmospheric physics,
-and produces a 12-hour probabilistic forecast with correct dashboard icons.
-No cloud APIs, no internet dependency, no API keys.
+A fully local weather forecaster for Home Assistant, tied to your own weather
+station.  It reads your sensors, estimates the current weather with physics,
+and forecasts 24 hours and three days with models trained on ten years of
+weather at 230 stations around the world - then keeps correcting itself
+against what your station actually measures.  No cloud APIs, no internet
+dependency, no API keys.
 
-Snow icons when it snows.  Rain when it rains.  Mixed when it's mixed.
-Seasons, time of day, and conditions all matter.
+One station sees about 100 km, so this is not a weather service: the next
+12 hours are good, tomorrow is decent, and the day after is an honest,
+calibrated guess.  The numbers are below.
 
 ## Features
 
 | Feature | Description |
 |---|---|
 | 12-state weather model | Maps 1:1 to HA condition strings (sunny, rainy, snowy, snowy-rainy, etc.) |
-| Hourly forecast | 12 hours ahead, probabilistic, with precipitation type |
-| Daily forecast | Today + tomorrow + day after tomorrow aggregated from hourly |
+| Hourly forecast | 24 hours ahead: temperature, humidity, pressure, wind, rain chance and amount, icon |
+| Daily forecast | Today (measured so far + forecast), tomorrow and the day after from their own daily models |
+| Trained models | Gradient-boosted trees, trained on 230 stations on six continents, pure Python at run time, no extra dependencies |
+| Self-correction | Every forecast your station can check is checked; bounded corrections for your site's bias (backyard vs airport) |
+| Any set of sensors | Temperature and pressure are enough; humidity, wind, wind direction and rain sharpen it |
 | Frontal detection | Warm, cold, occluded - exposed as a single `front` enum sensor |
 | Precipitation typing | Wet-bulb temperature: rain vs sleet vs snow |
 | Pressure suite | Sea-level pressure, 3-hour tendency with the atmospheric tide removed (+ direction enum), 24-hour synoptic mean, and a tendency-aware barometer enum - all standalone sensors |
 | Learned atmospheric tide | The daily pressure waves are learned at your station from its own barometer and thermometer - no location tuning, adapts to seasons and to a move |
-| Meteogram feed | Hourly-forecast sensor carrying the full 12h list as an attribute for chart cards - no MQTT publish/discovery workaround needed |
-| Energy-balance temperature | Diurnal cycle, radiative cooling, thermal inertia |
-| Clausius-Clapeyron humidity | Conservation of mixing ratio as temperature changes |
+| Meteogram feed | Hourly-forecast sensor carrying the full 24h list as an attribute for chart cards - no MQTT publish/discovery workaround needed |
 | Kalman sensor smoothing | Per-channel 1-D filter, rejects spikes, seeds from the first reading (correct on restart, no warm-up ramp) |
 | Day/night awareness | Swaps sunny/clear-night from `sun.sun` entity |
 | Signal smoothing | Rain persistence, cloud hysteresis, post-rain cloud memory - no icon flicker |
@@ -35,11 +39,14 @@ Seasons, time of day, and conditions all matter.
 
 | Module | Purpose |
 |---|---|
-| `coordinator.py` | Runs the pipeline: reads and unit-converts the sensors, recorder backfill at startup, estimator + forecaster, persisted pressure buffer; publishes one immutable result per run |
+| `coordinator.py` | Runs the pipeline: reads and unit-converts the sensors, recorder backfill at startup, estimator + forecaster, persisted pressure buffer and history; publishes one immutable result per run |
 | `state_estimator.py` | Sensor fusion, Kalman smoothing, trend computation, frontal detection, weather classification, signal smoothing (rain persistence, cloud hysteresis, post-rain cloud memory) |
 | `tide.py` | Atmospheric tide (S1 + S2 + S3) learned at the station; removed from every pressure trend, added back to the forecast |
-| `bayesian_forecaster.py` | Markov transition matrix + Bayesian evidence updates, hourly probability vectors |
-| `physics_models.py` | Energy-balance temperature, Clausius-Clapeyron humidity, damped pressure extrapolation |
+| `history.py` | Thirty days of the station's own hourly means, persisted; seeded from the recorder's statistics on a fresh install |
+| `features.py` | The model inputs - one definition shared with the training harness |
+| `model.py` | Loads and evaluates the shipped tree models (`models/*.json.gz`), pure Python |
+| `forecast.py` | Evaluates the models once per hour, re-anchors the hours on "now", turns outputs into icons |
+| `recal.py` | Bounded self-correction learned from the station's own verified forecasts |
 | `weather.py` | HA WeatherEntity - renders the coordinator's result as condition, attributes and hourly / daily forecasts |
 | `sensor.py` | Standalone sensor entities - precipitation, forecast condition, sea-level pressure, tendency (+ direction enum), synoptic mean, barometer enum, hourly-forecast meteogram feed, and the `front` enum |
 | `pressure_history.py` | Hourly sea-level-pressure ring buffer (24h window), persisted across restarts; feeds the tendency, synoptic-mean, and barometer sensors |
@@ -47,36 +54,32 @@ Seasons, time of day, and conditions all matter.
 | `map.py`, `wms_time.py` | Optional satellite viewer and the EUMETView frame-time cache behind it |
 
 ```
- Sensors                 State Estimator              Bayesian Forecaster
-+-----------+          +-------------------+        +-------------------------------+
-| pressure  |--+       | Kalman smoother   |        | 12x12 Markov matrix           |
-| temp      |--+       | dp/dt, d2p/dt2    |        | Evidence updates              |
-| humidity  |--+-----> | dT/dt, dH/dt      |------> | Physical constraints          |
-| wind      |--+       | Wet-bulb calc     |        | Physics models                |
-| rain      |--+       | Frontal detection |        | Day/night swap                |
-| solar     |--+       | State classify    |        |                               |
-+-----------+          +-------------------+        +----------+--------------------+
-                                                               |
-                                                    +----------v--------------------+
-                                                    | weather.local_weather_forecast|
-                                                    |                               |
-                                                    | condition + icon              |
-                                                    | 12h hourly forecast           |
-                                                    | daily forecast                |
-                                                    | rich attributes               |
-                                                    +-------------------------------+
+ Sensors           State Estimator          Hourly history          Forecaster
++-----------+    +-------------------+    +----------------+    +--------------------------+
+| pressure  |-+  | Kalman smoother   |    | 30 days of     |    | trained models, once per |
+| temp      |-+->| trends, tide      |    | hourly means   |--->| hour: 24 h + 3 days      |
+| humidity  |-+  | wet bulb, fronts  |    | (seeded from   |    | self-correction from the |
+| wind      |-+  | current condition |    |  the recorder) |    | station's own checks     |
+| rain      |-+  +---------+---------+    +----------------+    +------------+-------------+
+| solar     |-+            |                     ^                           |
++-----------+              +---------------------+                           |
+                           |                                                 |
+                 +---------v-------------------------------------------------v---------+
+                 | weather.local_weather_forecast: condition, 24 h hourly, 3 daily     |
+                 +---------------------------------------------------------------------+
 ```
 
-`state_estimator.py`, `tide.py`, `bayesian_forecaster.py`, `physics_models.py`,
-`pressure_history.py` and `classifiers.py` are pure Python with no HA dependencies.
+`state_estimator.py`, `tide.py`, `history.py`, `features.py`, `model.py`,
+`forecast.py`, `recal.py`, `pressure_history.py` and `classifiers.py` are pure
+Python with no HA dependencies.
 
 ---
 
 ## The 12 weather states
 
-Every forecast hour resolves to exactly one of these.  The index drives
-the 12x12 Markov transition matrix and maps 1:1 to the HA condition
-string that controls the dashboard icon.
+The current condition resolves to exactly one of these, and so does every
+forecast hour and day.  Each maps 1:1 to the HA condition string that
+controls the dashboard icon.
 
 | Index | Constant | HA Condition |
 |:---:|---|---|
@@ -98,7 +101,7 @@ string that controls the dashboard icon.
 ## Physics
 
 <details>
-<summary>Sensor smoothing, pressure trends, wet-bulb, dew point, frontal detection, temperature and humidity models</summary>
+<summary>Sensor smoothing, pressure trends, atmospheric tide, QNH, wet-bulb, dew point, frontal detection</summary>
 
 ### Kalman smoother
 
@@ -133,7 +136,7 @@ $$\frac{d^2p}{dt^2} \approx \frac{2\,(s_{\text{recent}} - s_{\text{old}})}{3\,\t
 Temperature, humidity and dew-depression trends use the same one-hour fit.
 
 A negative $d^2p/dt^2$ with falling pressure signals an accelerating
-low - the Bayesian layer increases weight on precipitation states.
+low, which feeds the frontal detection.
 
 ### Atmospheric tide
 
@@ -243,84 +246,134 @@ Three mechanisms prevent icon flicker on the dashboard:
 - **Cloud hysteresis** - a $\pm 0.06$ deadband on cloud-fraction thresholds.  If the current state is cloudy, the cloud fraction must drop below the threshold minus 0.06 to transition to partly-cloudy (and vice versa).  Eliminates rapid toggling at decision boundaries.
 - **Post-rain cloud memory** - after rain ends, a cloud-fraction floor of 0.40 is applied, linearly decaying to zero over 30 minutes.  Real skies stay overcast after rain stops; this prevents an immediate jump to sunny.
 
-### Energy-balance temperature model
-
-Temperature forecasts use a simplified surface energy budget:
-
-$$\frac{dT}{dt} = \frac{Q_{sw} - Q_{lw} - Q_h}{C}$$
-
-The model evaluates corrections relative to the current observation:
-
-- **Diurnal forcing** - asymmetric curve (slow solar warming, faster radiative cooling) with amplitude from latitude and cloud cover
-- **Radiative cooling** - enhanced for clear nights, approximately 1.5 C/h damped by humidity and wind mixing
-- **Thermal inertia** - time constant $\tau$ depends on wind (faster response) and humidity (slower, latent heat)
-
-### Clausius-Clapeyron humidity model
-
-Relative humidity adjusts to temperature change via conservation of mixing ratio:
-
-$$RH_2 = RH_1 \cdot \frac{e_s(T_1)}{e_s(T_2)}$$
-
-where saturation vapour pressure follows the Magnus formula:
-
-$$e_s(T) = 6.112 \cdot \exp\!\left(\frac{17.67 \cdot T}{T + 243.5}\right) \quad [\text{hPa}]$$
-
-Cooling raises RH (condensation, fog, precipitation).  Warming drops RH (clearing).
-
-### Pressure extrapolation
-
-Damped linear extrapolation of the tide-free pressure with hourly decay
-factor $\gamma = 0.92$, with the tide expected at each hour added back:
-
-$$P(t+h) = \left(P_0 - p_{\text{tide}}(t)\right) + \sum_{i=1}^{h} \frac{dp}{dt} \cdot \gamma^i + p_{\text{tide}}(t+h)$$
-
-The tide-free part is clamped to $[920, 1070]$ hPa.  The trend halves every approximately 8 hours, reflecting typical synoptic time-scales.
-
 </details>
 
 ---
 
-## Bayesian forecaster
+## Trained forecaster
 
 <details>
-<summary>Transition matrix, evidence updates, hard constraints</summary>
+<summary>What the models are, what they were trained on, and how good they are</summary>
 
-### Transition matrix
+### What forecasts
 
-A 12x12 Markov matrix $\mathbf{T}$ encodes climatological state persistence and transitions:
+Sixteen gradient-boosted tree ensembles (scikit-learn `HistGradientBoosting`,
+about 250 trees each), one per quantity:
 
-$$\mathbf{p}_{t+1} = \mathbf{p}_t \cdot \mathbf{T}$$
-
-Key properties:
-
-- The diagonal is the largest entry in every row (weather persists): $T_{ii} \in [0.30, 0.70]$
-- Sunny/partly-cloudy and cloudy/rainy have the strongest off-diagonal couplings
-- Snow states only connect to cold/wet states
-
-### Evidence updates
-
-Each hour, the prior from the Markov step is multiplied by likelihood factors derived from sensor trends:
-
-$$p_j \leftarrow p_j \cdot L_j(\text{evidence})$$
-
-| Factor | What it modulates |
+| Hourly, 1-24 h | Daily, tomorrow and the day after |
 |---|---|
-| Pressure tendency $dp/dt$ | Falling: +precip; rising: +clear |
-| Pressure acceleration $d^2p/dt^2$ | Negative: +severe weather |
-| Humidity | High: +fog/precip; low: +clear (only with a humidity sensor) |
-| Dew depression trend | Converging: +fog/precip (only with a humidity sensor) |
-| Frontal flags | Warm: +rain; cold: +showers/wind |
-| Wind speed | High: +windy state |
+| temperature, dew point (humidity), pressure, wind speed | high, low |
+| chance of a wet hour, mm if wet | chance of a rain day, mm if wet |
+| cloud cover, fog chance, thunder chance | cloud cover, mean wind, thunder chance |
 
-After evidence multiplication, the vector is renormalised to sum to 1.
+They read about fifty inputs computed from the station's own last 30 days of
+hourly means (`features.py`): the current values, 1-24 h changes, 24 h and
+7-day extremes and means, the pressure anomaly against the last month, hours
+since rain, and the sun - local solar time, sun elevation, day length and
+season (mirrored south of the equator).  Pressure is QNH with the station's
+learned atmospheric tide removed, and the tide is added back to the forecast
+pressure of each hour.
 
-### Hard constraints
+The models run in pure Python inside Home Assistant (`models/*.json.gz`,
+`model.py`): once per hour, in an executor, about 0.2 s on a Raspberry Pi.
 
-Physical impossibilities are zeroed out:
+### Training data
 
-- **Precipitation type by wet-bulb** - no snow or sleet when the forecast wet-bulb exceeds 6 C; no rain, pouring or thunderstorm below -2 C
-- **Day/night swap** - $p(\text{sunny}) \leftrightarrow p(\text{clear-night})$ based on whether the forecast hour falls between sunrise and sunset
-- **Precipitation probability** - sum of all wet-state probabilities (rainy + pouring + snowy + snowy-rainy + lightning-rainy)
+Ten years (2016-2025) of hourly METAR reports from 230 airports on six
+continents, sea level to 2.5 km, from the Iowa Environmental Mesonet archive;
+the labels come from what was observed - temperature, dew point, wind,
+pressure, cloud layers, and the present-weather codes for rain, fog and
+thunder.  Rain amounts come from the US stations' gauges.  The author's own
+station (12 years) joins only the final training run and never a scored one.
+
+Any combination of sensors works: during training whole sensors (humidity,
+wind, rain) were hidden at random, so a missing sensor is a normal input, and
+a fresh install with one hour of history falls back on place and season.
+
+### How good it is
+
+Scored on stations the models never saw (three-fold cross-validation by
+station), against what a single station can do without a forecast
+("persistence": nothing changes) and against the 1.6.0 Bayesian forecaster
+replayed on the same hours:
+
+| | 1-3 h | 4-6 h | 7-12 h | 13-24 h |
+|---|---|---|---|---|
+| Temperature, mean error | 1.0 C | 1.5 C | 1.8 C | 2.1 C |
+| (persistence) | 1.5 C | 3.2 C | 4.7 C | 3.9 C |
+| Rain chance, AUC | 0.91 | 0.86 | 0.83 | 0.79 |
+| Rain chance, skill vs the station's climatology | +0.35 | +0.20 | +0.12 | +0.06 |
+
+| | Tomorrow | Day after |
+|---|---|---|
+| High, mean error (persistence) | 2.3 C (2.8) | 2.8 C (3.3) |
+| Low, mean error (persistence) | 2.1 C (2.6) | 2.5 C (3.1) |
+| Rain day, AUC | 0.80 | 0.76 |
+
+Against 1.6.0 on identical hours: temperature 1-12 h 1.53 C vs 2.37 C; rain
+chance Brier 0.063 vs 0.106 with an average forecast of 8 % against 9 %
+observed (1.6.0: 24 %); tomorrow's high 2.3 C vs 5.2 C and low 2.1 C vs
+3.9 C; rain-day AUC 0.80 vs 0.63.
+
+Fog and thunder are rare and cannot be placed in the right hour from one
+station, so their icons show only when the risk is high; a thunder day is
+predictable (AUC 0.86) and shows on the daily forecast.
+
+### At one backyard station, twelve years
+
+The final exam was the author's own station (Brasov, Romania, a 544 m basin):
+12.8 years of hourly records, 2014-2026, five sensor generations - scored with
+models trained WITHOUT it, every hour of the record as a forecast, the
+self-correction replayed exactly as it runs in Home Assistant and restarted
+every January 1st (a new install each year):
+
+| | 1-3 h | 4-6 h | 7-12 h | 13-24 h |
+|---|---|---|---|---|
+| Temperature (persistence) | 1.3 C (1.9) | 1.9 C (4.1) | 2.2 C (5.9) | 2.5 C (4.8) |
+| Dew point (persistence) | 0.9 C (0.9) | 1.3 C (1.7) | 1.6 C (2.2) | 2.0 C (2.4) |
+| Wind (persistence) | 0.4 m/s (0.4) | 0.4 m/s (0.5) | 0.5 m/s (0.6) | 0.5 m/s (0.6) |
+| Rain chance, skill vs climatology | +0.23 | +0.12 | +0.08 | +0.05 |
+
+| | Tomorrow | Day after |
+|---|---|---|
+| High (persistence / climatology) | 3.8 C (4.4 / 5.1) | 4.3 C (5.1 / 5.1) |
+| Low (persistence / climatology) | 1.9 C (2.3 / 2.9) | 2.3 C (2.8 / 2.9) |
+| Rain day, skill vs climatology | +0.09 | +0.02 |
+
+Against 1.6.0 on the same hours: temperature +1 h 1.0 C vs 1.3 C, +12 h
+2.3 C vs 3.8 C; rain chance 1-12 h skill +0.13 vs -0.76 with an average of
+5 % against 5 % observed (1.6.0: 20 %); tomorrow's high 3.8 C vs 7.3 C.
+
+The self-correction is what makes a backyard work: this anemometer sees 40 %
+of the wind an airport mast does, and its thermometer runs warm or cold by
+time of day - both learned within weeks.
+
+### Self-correction
+
+The models learned airports.  A backyard station sits lower or higher, in a
+hollow or on a roof, and its rain sensor counts rain differently from an
+observer.  So every forecast the station can verify is verified once its
+hour (or day) has been measured, and a small correction is learned per
+forecast range (`recal.py`): an additive bias for temperature and dew point,
+a scale for wind, a shift in log-odds for the rain chance (only with a rain
+sensor), and the same for the daily high, low and rain day.  Every correction
+is bounded, so a broken sensor cannot teach the forecast nonsense, and starts
+at zero.  The state is visible in the diagnostics download.
+
+### History
+
+The hourly history behind the inputs is kept for 30 days and persisted across
+restarts.  On a new install it is seeded from the recorder's long-term
+statistics (sensors with a `state_class`), so the forecast starts with weeks
+of history instead of none.  If the newest hour has no readings yet, the
+current values stand in for it: there is always a forecast to show.
+
+### Retraining
+
+The training harness is not part of this repository.  It downloads the
+station archive, builds the inputs with a vectorised copy of `features.py`
+(a parity test holds the two together), cross-validates, scores and exports
+`models/`.
 
 </details>
 
@@ -352,7 +405,7 @@ sensor is not configured, rather than published from a placeholder value.
 
 Standard weather entity properties are also available:
 `temperature`, `apparent_temperature`, `dew_point`, `humidity`,
-`pressure`, `wind_speed`, `wind_bearing`, hourly forecast (12h),
+`pressure`, `wind_speed`, `wind_bearing`, hourly forecast (24h),
 daily forecast (today, tomorrow and the day after).  Forecast `humidity`,
 `wind_speed` and `wind_bearing` are `null` when the matching sensor is not
 configured.
@@ -382,7 +435,7 @@ All entity IDs are prefixed `sensor.local_weather_forecast_`.
 | `pressure_tendency_direction` | enum | `falling_fast` / `falling` / `steady` / `rising` / `rising_fast`, with arrow icons |
 | `pressure_synoptic` | hPa | 24-hour rolling mean of sea-level pressure |
 | `barometer` | enum | Tendency-aware needle: `stormy` / `rain` / `change` / `fair` / `very_dry` |
-| `hourly_forecast` | timestamp | Generation time; the `forecast` attribute carries the full 12h list for meteogram cards |
+| `hourly_forecast` | timestamp | Generation time; the `forecast` attribute carries the full 24h list for meteogram cards |
 | `front` | enum | Frontal passage: `none` / `warm` / `cold` / `occluded` |
 
 The `barometer`, `pressure_tendency_direction`, and `front` sensors are
@@ -495,13 +548,13 @@ Recommended setup: pressure + temperature + humidity + wind speed + wind directi
 
 | Sensor | Why it matters |
 |---|---|
-| **Pressure** | The single most important weather predictor.  All frontal detection, storm warning, and trend analysis depends on it.  Use a dedicated barometric sensor (BME280/BMP388), not a phone app. |
-| **Temperature** | Drives precipitation type (rain vs snow), diurnal model, feels-like temperature. |
-| **Humidity** | Enables dew point, wet-bulb (snow/rain classification), fog detection, Clausius-Clapeyron humidity forecast. |
-| **Wind speed** | Frontal detection (backing/veering), windchill, radiative cooling damping. |
-| **Wind direction** | Critical for frontal passage detection (warm front = backing, cold front = veering). |
-| **Solar radiation** | Cloud fraction estimation when no other cloud data is available.  Falls back to humidity-based estimate without it. |
-| **Rain rate** | Live precipitation detection.  Without it, precipitation is inferred from humidity + pressure trends. |
+| **Pressure** | The single most important weather predictor: tendencies, the month's anomaly, frontal detection.  Use a dedicated barometric sensor (BME280/BMP388), not a phone app.  Required. |
+| **Temperature** | The models' anchor, precipitation type (rain vs snow), feels-like temperature.  Required. |
+| **Humidity** | Dew point and its trend are strong rain and fog inputs; enables the humidity forecast and wet-bulb snow/rain typing. |
+| **Wind speed** | Forecast input and the wind forecast itself; the self-correction learns how sheltered your anemometer is. |
+| **Wind direction** | Flow direction as a forecast input; frontal passage detection (backing/veering). |
+| **Solar radiation** | Current cloud estimate for the present condition.  Not a forecast input. |
+| **Rain rate** | Hours since rain is a strong input, and only with it can the rain chance calibrate itself to your station. |
 
 </details>
 

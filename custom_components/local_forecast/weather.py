@@ -20,12 +20,12 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .bayesian_forecaster import HourForecast
 from .coordinator import (
     ForecastResult,
     LocalForecastConfigEntry,
     LocalForecastCoordinator,
 )
+from .forecast import HourForecast
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,13 +46,6 @@ _CONDITION_SEVERITY: dict[str, int] = {
     "sunny": 0,
 }
 
-# Day+2 extrapolation regresses severe conditions toward milder ones.
-_CONDITION_DECAY: dict[str, str] = {
-    "pouring": "rainy",
-    "lightning-rainy": "rainy",
-    "exceptional": "cloudy",
-}
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -64,7 +57,7 @@ async def async_setup_entry(
 
 
 class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherEntity):
-    """Bayesian local weather forecast entity."""
+    """Local weather forecast entity."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -140,7 +133,7 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
     # ------------------------------------------------------------------
 
     async def async_forecast_hourly(self) -> list[Forecast] | None:
-        """Return the raw 12-hour probabilistic forecast."""
+        """Return the 24-hour forecast."""
         if not (data := self._data) or not data.hourly:
             return None
 
@@ -163,116 +156,63 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
         ]
 
     async def async_forecast_daily(self) -> list[Forecast] | None:
-        """Aggregate hourly into today / tomorrow / day-after-tomorrow.
+        """Today, tomorrow and the day after.
 
-        With a 12-hour horizon, tomorrow uses the tail hours and day+2
-        extrapolates further toward climatological mean values.
+        Today combines what has been measured since midnight with the hours
+        still to come; tomorrow and the day after come from the daily models.
         """
         if not (data := self._data) or not data.hourly:
             return None
 
         now = data.generated
-        hourly = data.hourly
-        today_hours = [h for h in hourly if (now + timedelta(hours=h.hours_ahead)).date() == now.date()]
-        tomorrow_hours = [h for h in hourly if (now + timedelta(hours=h.hours_ahead)).date() != now.date()]
+        today = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == now.date()]
+        if not today:  # the last minutes before midnight
+            today = data.hourly[:1]
+        temps = [h.temperature for h in today]
+        if data.today_observed is not None:
+            temps += list(data.today_observed)
+        condition = _worst_condition(today)
+        days: list[Forecast] = [
+            Forecast(  # type: ignore[typeddict-unknown-key]
+                datetime=now.replace(microsecond=0).isoformat(),
+                # Daily forecasts are always daytime.
+                condition="sunny" if condition == "clear-night" else condition,
+                native_temperature=round(max(temps), 1),
+                native_templow=round(min(temps), 1),
+                precipitation_probability=max(h.precipitation_probability for h in today),
+                native_precipitation=round(sum(h.precipitation_amount for h in today), 1),
+                humidity=_mean([h.humidity for h in today]),
+                native_pressure=_mean([h.pressure for h in today], 1),
+                native_wind_speed=_mean([h.wind_speed for h in today], 1),
+                wind_bearing=today[0].wind_bearing,
+                is_daytime=True,
+            )
+        ]
 
-        # If all forecast hours fall in today, use the tail as proxy
-        if not tomorrow_hours:
-            tomorrow_hours = hourly[-min(6, len(hourly)) :]
-        if not today_hours:
-            today_hours = hourly[: min(6, len(hourly))]
-
-        days: list[Forecast] = []
-
-        for offset_days, hours in enumerate([today_hours, tomorrow_hours]):
-            if not hours:
-                continue
-            temps = [h.temperature for h in hours]
-            condition = _worst_condition(hours)
-
-            # Daily forecasts are always daytime — swap clear-night to sunny
-            if condition == "clear-night":
-                condition = "sunny"
-
-            # Today uses current time so it's never "in the past" for the
-            # frontend card; future days use noon.
-            if offset_days == 0:
-                dt_entry = now.replace(microsecond=0)
-            else:
-                day = now.date() + timedelta(days=offset_days)
-                dt_entry = datetime(day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo)
-
+        for day in data.daily:
+            date = datetime.fromordinal(day.date).date()
+            hours = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == date]
+            # Humidity and pressure have no daily model: the forecast hours that
+            # reach into the day stand for it.
+            near = hours or data.hourly[-1:]
             days.append(
                 Forecast(  # type: ignore[typeddict-unknown-key]
-                    datetime=dt_entry.isoformat(),
-                    condition=condition,
-                    native_temperature=round(max(temps), 1),
-                    native_templow=round(min(temps), 1),
-                    precipitation_probability=max(h.precipitation_probability for h in hours),
-                    native_precipitation=round(sum(h.precipitation_amount for h in hours), 1),
-                    humidity=_mean([h.humidity for h in hours]),
-                    native_pressure=_mean([h.pressure for h in hours], 1),
-                    native_wind_speed=_mean([h.wind_speed for h in hours], 1),
-                    wind_bearing=hours[0].wind_bearing,
+                    datetime=datetime(date.year, date.month, date.day, 12, 0, 0, tzinfo=now.tzinfo).isoformat(),
+                    condition=day.condition,
+                    native_temperature=day.temperature,
+                    native_templow=day.templow,
+                    precipitation_probability=day.precipitation_probability,
+                    native_precipitation=day.precipitation_amount,
+                    humidity=_mean([h.humidity for h in near]),
+                    native_pressure=_mean([h.pressure for h in near], 1),
+                    native_wind_speed=day.wind_speed,
+                    wind_bearing=today[0].wind_bearing,
                     is_daytime=True,
                 )
             )
 
-        if tomorrow_hours:
-            days.append(_extrapolate_day2(today_hours, tomorrow_hours, now))
-
         _LOGGER.debug("Daily forecast: %d day(s)", len(days))
-        return days or None
-
-
-def _extrapolate_day2(
-    today_hours: list[HourForecast],
-    tomorrow_hours: list[HourForecast],
-    now: datetime,
-) -> Forecast:
-    """Extend beyond the 12 h horizon by regressing toward climatological norms."""
-    last = tomorrow_hours[-1]
-
-    # Temperature regresses toward the daily mean (avg of today's high/low)
-    # with a ~24 h time constant.
-    today_temps = [h.temperature for h in today_hours] or [last.temperature]
-    daily_mean = (max(today_temps) + min(today_temps)) / 2.0
-    temp_high = round(last.temperature * 0.6 + daily_mean * 0.4, 1)
-    temp_low = round(
-        min(h.temperature for h in tomorrow_hours) * 0.6 + (daily_mean - 4.0) * 0.4,
-        1,
-    )
-    if temp_high < temp_low:
-        temp_high, temp_low = temp_low, temp_high
-
-    # Precip probability decays toward the ~20% base rate.
-    last_precip = max(h.precipitation_probability for h in tomorrow_hours)
-
-    condition = _worst_condition(tomorrow_hours)
-    if condition == "clear-night":
-        condition = "sunny"
-    condition = _CONDITION_DECAY.get(condition, condition)
-
-    # Pressure continues the gentle trend; humidity regresses toward the
-    # 55% continental mean.
-    pressure = round(last.pressure + last.pressure - tomorrow_hours[0].pressure, 1)
-    humidities = [h.humidity for h in tomorrow_hours]
-    humidity = None if None in humidities else round(sum(humidities) / len(humidities) * 0.7 + 55 * 0.3)
-
-    day = now.date() + timedelta(days=2)
-    return Forecast(  # type: ignore[typeddict-unknown-key]
-        datetime=datetime(day.year, day.month, day.day, 12, 0, 0, tzinfo=now.tzinfo).isoformat(),
-        condition=condition,
-        native_temperature=temp_high,
-        native_templow=temp_low,
-        precipitation_probability=round(last_precip * 0.7 + 20 * 0.3),
-        native_precipitation=round(sum(h.precipitation_amount for h in tomorrow_hours) * 0.7, 1),
-        humidity=humidity,
-        native_pressure=max(920.0, min(1070.0, pressure)),
-        native_wind_speed=None if last.wind_speed is None else round(last.wind_speed * 0.8 + 0.5, 1),
-        wind_bearing=last.wind_bearing,
-        is_daytime=True,
-    )
+        return days
 
 
 def _mean(values: list[float | None], ndigits: int | None = None) -> float | None:

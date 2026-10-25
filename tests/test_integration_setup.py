@@ -21,7 +21,6 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import get_diagnostics_for_config_entry
 
-from local_forecast.bayesian_forecaster import HourForecast
 from local_forecast.const import (
     CONF_ELEVATION,
     CONF_HUMIDITY_SENSOR,
@@ -36,6 +35,7 @@ from local_forecast.const import (
     MAP_TIME_CACHE_TTL,
     PRESSURE_ABSOLUTE,
 )
+from local_forecast.forecast import DayForecast, HourForecast
 from local_forecast.map import _ring_radius
 from local_forecast.tide import LocalTide
 from local_forecast.weather import LocalForecastWeather
@@ -258,9 +258,7 @@ async def test_unconfigured_channels_report_none(hass):
     assert all(item["humidity"] is None and item["wind_speed"] is None for item in meteogram)
 
 
-async def test_daily_today_ends_at_local_midnight():
-    """At 14:30 the +10 h hour is 00:30 tomorrow, not the last hour of today."""
-    generated = datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone())
+def _daily_weather(generated: datetime, today_observed=None) -> LocalForecastWeather:
     hourly = [
         HourForecast(
             hours_ahead=h,
@@ -273,17 +271,41 @@ async def test_daily_today_ends_at_local_midnight():
             wind_speed=2.0,
             wind_bearing=180,
         )
-        for h in range(1, 13)
+        for h in range(1, 25)
     ]
+    today = generated.date().toordinal()
+    daily = [
+        DayForecast(date=today + k, condition="rainy", temperature=20.0 + k, templow=10.0 + k,
+                    precipitation_probability=60, precipitation_amount=3.2, wind_speed=2.5)
+        for k in (1, 2)
+    ]  # fmt: skip
     weather = LocalForecastWeather.__new__(LocalForecastWeather)
     weather.coordinator = SimpleNamespace(
-        data=SimpleNamespace(generated=generated, hourly=hourly),
+        data=SimpleNamespace(generated=generated, hourly=hourly, daily=daily, today_observed=today_observed),
     )
+    return weather
 
-    today, tomorrow, _ = await weather.async_forecast_daily()
+
+async def test_daily_today_ends_at_local_midnight():
+    """At 14:30 the +10 h hour is 00:30 tomorrow, not the last hour of today."""
+    weather = _daily_weather(datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone()))
+
+    today, tomorrow, after = await weather.async_forecast_daily()
 
     assert today["native_temperature"] == 9.0
-    assert tomorrow["native_templow"] == 10.0
+    assert (tomorrow["native_temperature"], tomorrow["native_templow"]) == (21.0, 11.0)
+    assert tomorrow["datetime"].startswith("2026-09-28T12:00")
+    assert after["datetime"].startswith("2026-09-29T12:00")
+    assert tomorrow["precipitation_probability"] == 60
+
+
+async def test_daily_today_includes_what_was_measured():
+    """This morning's 4 C low stays today's low after the forecast hours warm up."""
+    weather = _daily_weather(datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone()), (12.0, 4.0))
+
+    today, *_ = await weather.async_forecast_daily()
+
+    assert (today["native_temperature"], today["native_templow"]) == (12.0, 1.0)
 
 
 async def test_high_altitude_station_is_not_rejected(hass):
@@ -338,7 +360,7 @@ async def test_forecasts_are_served(hass, sensors):
         return_response=True,
     )
     hourly = result[WEATHER]["forecast"]
-    assert len(hourly) == 12
+    assert len(hourly) == 24
 
     result = await hass.services.async_call(
         "weather",
@@ -347,7 +369,11 @@ async def test_forecasts_are_served(hass, sensors):
         blocking=True,
         return_response=True,
     )
-    assert len(result[WEATHER]["forecast"]) >= 3
+    daily = result[WEATHER]["forecast"]
+    assert len(daily) == 3
+    for day in daily:
+        assert day["templow"] <= day["temperature"]
+        assert 0 <= day["precipitation_probability"] <= 100
 
 
 async def test_sensor_change_refreshes_the_entity(hass, sensors):
@@ -492,20 +518,49 @@ async def test_restored_tendency_excludes_the_tide(hass, sensors, hass_storage, 
 
 
 async def test_forecast_pressure_carries_the_tide_of_each_hour(hass, sensors, freezer):
-    """Steady weather: each forecast hour moves by exactly the tide between now and then."""
+    """No weather change forecast: each hour moves by exactly the tide between issue and then."""
     freezer.move_to(datetime.fromtimestamp(1.79e9, dt_util.UTC))
+    # The running copy, as with _wms_time(): HA loads custom_components.local_forecast.
+    model_set = sys.modules["custom_components.local_forecast.model"].ModelSet
+    original = model_set.load
+
+    def flat_pressure(*args, **kwargs):
+        models = original(*args, **kwargs)
+        models.hourly["p"] = SimpleNamespace(predict=lambda row: 0.0)
+        return models
+
     entry = _entry(hass)
-    await _setup(hass, entry)
+    with patch.object(model_set, "load", flat_pressure):
+        await _setup(hass, entry)
     tide = entry.runtime_data.tide.hpa_at
+    issue = entry.runtime_data.forecaster.issue.ts
 
     result = await hass.services.async_call(
         "weather", "get_forecasts", {"entity_id": WEATHER, "type": "hourly"}, blocking=True, return_response=True
     )
     now = 1.79e9
     pressures = [item["pressure"] for item in result[WEATHER]["forecast"]]
-    expected = [1013.2 - tide(now) + tide(now + h * 3600) for h in range(1, 13)]
+    expected = [1013.2 - tide(issue) + tide(now + h * 3600) for h in range(1, 25)]
     assert max(expected) - min(expected) > 0.3
     assert pressures == pytest.approx(expected, abs=0.06)
+
+
+async def test_forecast_hours_are_continuous_and_complete(hass, sensors):
+    """24 hours, one per hour from now, every value a number the card can draw."""
+    await _setup(hass, _entry(hass))
+    result = await hass.services.async_call(
+        "weather", "get_forecasts", {"entity_id": WEATHER, "type": "hourly"}, blocking=True, return_response=True
+    )
+    hours = result[WEATHER]["forecast"]
+    stamps = [datetime.fromisoformat(h["datetime"]) for h in hours]
+    assert all((b - a).total_seconds() == 3600 for a, b in zip(stamps, stamps[1:], strict=False))
+    for h in hours:
+        for key in ("temperature", "pressure", "precipitation_probability", "humidity", "wind_speed"):
+            assert isinstance(h[key], int | float) and not math.isnan(h[key]), key
+        assert h["condition"] in {
+            "clear-night", "cloudy", "fog", "lightning-rainy", "partlycloudy", "pouring",
+            "rainy", "snowy", "snowy-rainy", "sunny", "windy",
+        }  # fmt: skip
 
 
 async def test_diagnostics_report_the_learned_tide(hass, sensors, hass_client):
@@ -517,3 +572,5 @@ async def test_diagnostics_report_the_learned_tide(hass, sensors, hass_client):
 
     assert data["config"][CONF_PRESSURE_SENSOR] == "sensor.pressure"
     assert set(data["tide"]) >= {"tide_now_hpa", "s1_hpa", "s2_hpa", "s3_hpa", "site_gain_hpa_per_k", "learned_days"}
+    assert data["history_hours"] >= 1
+    assert data["self_correction"]["verified"] == 0

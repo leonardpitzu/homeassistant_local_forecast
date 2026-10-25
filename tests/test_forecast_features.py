@@ -1,0 +1,86 @@
+"""Model inputs: sun geometry, windows, missing channels."""
+
+from datetime import UTC, datetime
+import math
+
+import pytest
+
+from local_forecast.features import (
+    BASE,
+    CHANNELS,
+    DAILY,
+    HOURLY,
+    base,
+    daily_row,
+    dew_point,
+    hourly_row,
+    rh_from,
+    solar,
+)
+
+NAN = float("nan")
+
+
+def _ts(*args: int) -> float:
+    return datetime(*args, tzinfo=UTC).timestamp()
+
+
+def test_equinox_noon_sun_stands_at_ninety_minus_latitude():
+    _hour, _el, noon, daylen, _season = solar(_ts(2026, 3, 20, 12), 45.0, 0.0)
+    assert noon == pytest.approx(45.0, abs=0.5)
+    assert daylen == pytest.approx(12.0, abs=0.15)
+
+
+def test_solar_noon_follows_longitude_not_the_timezone():
+    # 25.6 E: the sun is highest ~1 h 42 min before 12:00 UTC.
+    hour, *_ = solar(_ts(2026, 6, 1, 10, 18), 45.6, 25.6)
+    assert hour == pytest.approx(12.0, abs=0.1)
+
+
+def test_season_is_mirrored_south_of_the_equator():
+    *_, north = solar(_ts(2026, 7, 1), 45.0, 0.0)
+    *_, south = solar(_ts(2026, 7, 1), -45.0, 0.0)
+    assert math.cos(north - south) == pytest.approx(-1.0, abs=1e-9)
+
+
+def test_humidity_round_trip():
+    assert rh_from(20.0, dew_point(20.0, 65.0)) == pytest.approx(65.0, abs=1e-6)
+
+
+def _history(hours: int, **channels: list[float]) -> dict[str, list[float]]:
+    out = {c: [NAN] * hours for c in CHANNELS}
+    out.update(channels)
+    return out
+
+
+def test_minimal_station_gets_nan_not_errors():
+    """Temperature and pressure only, one hour of history: every other input is NaN."""
+    f = base(_history(1, t=[12.0], p=[1015.0]), _ts(2026, 5, 1, 12), 45.6, 25.6, 544)
+    assert set(f) == set(BASE)
+    assert f["t0"] == 12.0 and f["p0"] == 1015.0
+    for k in ("td0", "rh0", "ws0", "wet0", "dt3", "tmean30", "pz30", "since"):
+        assert math.isnan(f[k]), k
+
+
+def test_tendencies_use_the_tide_as_known_now():
+    p = [1010.0] * 5
+    f = base(_history(5, t=[10.0] * 5, p=p), 1.8e9, 45.0, 25.0, 0, tide=lambda ts: (ts - 1.8e9) / 3600.0)
+    # Raw pressure is flat; the tide fell 3 hPa over 3 h, so the weather rose 3.
+    assert f["p0"] == 1010.0
+    assert f["dp3"] == pytest.approx(-3.0)
+
+
+def test_rows_line_up_with_the_model_inputs():
+    f = base(_history(48, t=[10.0] * 48, p=[1012.0] * 48), 1.8e9, 45.0, 25.0, 300)
+    h = hourly_row(f, 1.8e9, 6, 45.0, 25.0)
+    d = daily_row(f, 1.8e9, 2, 5.0, 45.0, 25.0)
+    assert len(h) == len(HOURLY) and h[HOURLY.index("lead")] == 6.0
+    assert len(d) == len(DAILY) and d[DAILY.index("hleft")] == 29.0
+
+
+def test_hours_since_rain():
+    wet = [0.0] * 100
+    wet[-8] = 1.0
+    f = base(_history(100, t=[5.0] * 100, p=[1000.0] * 100, wet=wet), 1.8e9, 45.0, 25.0, 0)
+    assert f["since"] == 7.0
+    assert f["wet24"] == pytest.approx(1 / 24)

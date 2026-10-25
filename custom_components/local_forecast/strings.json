@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Local Weather Forecast",
-        "description": "Configure sensor sources for the Bayesian local weather forecaster.",
+        "description": "Configure the sensor sources of your weather station for the local forecaster.",
         "data": {
           "pressure_sensor": "Pressure sensor",
           "temperature_sensor": "Temperature sensor",
