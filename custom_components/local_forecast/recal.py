@@ -13,10 +13,15 @@ per forecast range:
   daily high / low         an additive bias per day ahead
   rain day chance          a shift in log-odds per day ahead
 
-Tuned on 12 years of a backyard station the models never saw (forecaster
-harness, recal_tune.py): the time-of-day bias cut its temperature error by
-10 % at 1-6 h where a single bias did nothing, and the wind scale settled near
-0.4 (its anemometer sees 0.6 m/s where airports see 1.5).
+Tuned on 24 stations the models never saw, on four continents, plus a
+backyard station (forecaster harness, heldout.py recal): one replay per
+station and setting, a fresh install every January 1st.  The rates below are
+the ones that help on average and cost no station more than ~0.7 % (a faster
+temperature rate gained 0.2 % more on average but cost one station 1.6 %).
+Mean error change: temperature -5 to -3 % (backyard -10 to -4 %), dew point
+-3 %, wind -3 to -4 % (backyard -80 %: its anemometer sees 40 % of an
+airport's wind), rain chance -1 % (backyard -3 to -4 %).  A single
+temperature bias, without the time of day, made 7-24 h forecasts worse.
 
 Rates are the share of the gap closed per hour of verified forecasts in a
 range.  Every correction is bounded, so a broken sensor cannot teach the
@@ -35,9 +40,9 @@ from typing import Any
 BUCKETS = ((1, 3), (4, 6), (7, 12), (13, 24))
 DAY_PARTS = 8  # temperature bias per 3 h of solar time
 
-SHIFT_RATE = 0.02  # per hour of verified forecasts
-SCALE_RATE = 0.02
-LOGIT_RATE = 0.05
+SHIFT_RATE = 0.01  # per hour of verified forecasts
+SCALE_RATE = 0.005
+LOGIT_RATE = 0.02
 DAILY_RATE = 0.03  # per verified day
 MAX_SHIFT_C = 3.0
 SCALE_RANGE = (0.2, 2.0)

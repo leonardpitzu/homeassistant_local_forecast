@@ -1,10 +1,10 @@
 """The forecast: trained models over the station's own hourly history.
 
 Once per hour (an "issue") every model is evaluated on the features of the
-last closed hour: 24 hourly leads and the next two calendar days.  Between
-issues the published hours are re-anchored on the current time by linear
-interpolation between leads, so entries stay at "now + k hours" as the cards
-have always shown them.
+last closed hour: 24 hourly leads, the rest of today and the next two calendar
+days.  Between issues the published hours are re-anchored on the current time
+by linear interpolation between leads, so entries stay at "now + k hours" as
+the cards have always shown them.
 
 What each model says, and how it reaches the card:
   temperature, dew point, pressure   a change from now (pressure with the
@@ -14,7 +14,10 @@ What each model says, and how it reaches the card:
   rain                                chance of a wet hour, and mm if wet
   cloud, fog, thunder                 cover 0..1 and chances, for the icon
   daily high / low, rain day          from their own daily models, not from
-                                      aggregated hours
+                                      aggregated hours; today joins what was
+                                      measured since midnight with the rest-of-
+                                      today model, and every day is reconciled
+                                      with the hourly forecast where they meet
 
 Every hourly and daily number the station can verify is corrected by the
 bounded self-correction in recal.py.
@@ -39,13 +42,15 @@ LEADS = 24
 _HOUR = 3600
 
 
-# Icon thresholds, set on out-of-fold forecasts for 230 stations the models
+# Icon thresholds, set on out-of-fold forecasts for 280 stations the models
 # never saw (weather_lab/forecaster/score.py).  Rain and cloud are frequency-
-# matched: the rainy / cloudy icon shows as often as rainy / cloudy weather
-# happens, so the icons are neither too wet nor too dry.  Fog and thunder
-# cannot be placed in the right hour (at best ~30 % and ~12 % of such icons
-# would be right), so they show only when the risk is high; a thunder DAY is
-# predictable (AUC 0.86) and shows from a 30 % chance.
+# matched: the rainy / cloudy icon shows as often as rain (>= 0.2 mm measured)
+# or cloud happens, so the icons are neither too wet nor too dry.  Fog and
+# thunder cannot be placed in the right hour (about 1 in 4 fog icons and 1 in
+# 8 thunder icons would be right), so they show less often than they happen:
+# fog from 20 % (0.9 % of hours against 1.5 % fog), thunder from 30 % (almost
+# never).  A thunder DAY is predictable (AUC 0.84) and shows from 30 % (36 %
+# right).
 @dataclass(frozen=True)
 class Thresholds:
     rain: float
@@ -55,13 +60,22 @@ class Thresholds:
     partly: float
 
 
-HOURLY_ICONS = Thresholds(rain=0.25, thunder=0.30, fog=0.30, cloudy=0.53, partly=0.45)
-DAILY_ICONS = Thresholds(rain=0.40, thunder=0.30, fog=1.01, cloudy=0.62, partly=0.44)
+HOURLY_ICONS = Thresholds(rain=0.20, thunder=0.30, fog=0.20, cloudy=0.54, partly=0.46)
+DAILY_ICONS = Thresholds(rain=0.42, thunder=0.30, fog=1.01, cloudy=0.63, partly=0.45)
 HEAVY_DAY_MM = 25.0  # a wet day this heavy shows as pouring
 
-# The estimator calls fog on saturated, calm air; at 230 stations that alone is
+# Where the daily forecast meets the hourly one.  When the hours cover the part
+# of a day where its high (13-17 h local) or low (04-08 h) usually falls, the
+# daily value is averaged with the hours' extreme; then it is clamped so a
+# high is never below one of its own hours (nor a low above).  On 24 held-out
+# stations this was the best or equal choice for both (low: -1.6 % error,
+# better at 16 of 24), and it halves the visible disagreement.
+WARM_HOURS = range(13, 18)
+COLD_HOURS = range(4, 9)
+
+# The estimator calls fog on saturated, calm air; at the airports that alone is
 # fog 8 % of the time.  When the fog model gives the next hour under 5 %, the
-# call is vetoed: two thirds of the false fog goes, three in four real fogs stay.
+# call is vetoed: 60 % of the false fog goes, three in four real fogs stay.
 FOG_VETO = 0.05
 
 
@@ -83,7 +97,7 @@ class HourForecast:
 
 @dataclass
 class DayForecast:
-    """A whole local calendar day."""
+    """A whole local calendar day (today: measured so far + the rest)."""
 
     date: int  # proleptic ordinal of the local date
     condition: str
@@ -102,6 +116,15 @@ class Sensors:
     wind: bool = False
     wind_direction: bool = False
     rain: bool = False
+
+
+@dataclass
+class Observed:
+    """What the station measured today, since local midnight."""
+
+    high: float
+    low: float
+    rain_mm: float | None  # None without a rain sensor
 
 
 @dataclass
@@ -205,14 +228,15 @@ class Forecaster:
             k: [self.recal.hourly(k, lead, v, sh[lead]) for lead, v in enumerate(vals)] for k, vals in issue.raw.items()
         }
         daily = self.models.daily
-        # Day 3 covers the half hour after midnight, when the newest closed hour
-        # still belongs to yesterday and "the day after tomorrow" is 3 days out.
-        for offset in (1, 2, 3):
+        # 0 is the rest of today.  Day 3 covers the half hour after midnight,
+        # when the newest closed hour still belongs to yesterday and "the day
+        # after tomorrow" is 3 days out.
+        for offset in (0, 1, 2, 3):
             row = daily_row(f, ts, offset, hours_to_midnight, self.lat, self.lon)
             raw = {k: m.predict(row) for k, m in daily.items() if k != "wsday" or sensors.wind}
             issue.raw_days[offset] = raw
             issue.days[offset] = {k: self.recal.daily(k, offset, v) for k, v in raw.items()}
-            if offset <= 2:
+            if 1 <= offset <= 2:
                 self._day_snaps[(local_date + offset, offset)] = (issue.t0, raw)
         self._day_snaps = {k: v for k, v in self._day_snaps.items() if k[0] >= local_date - 1}
         self.issue = issue
@@ -328,20 +352,46 @@ class Forecaster:
             )
         return out
 
-    def days(self, sensors: Sensors, humidity_now: float | None, today: int) -> list[DayForecast]:
-        """Tomorrow and the day after, as calendar dates (``today`` is an ordinal)."""
+    def days(
+        self,
+        sensors: Sensors,
+        humidity_now: float | None,
+        today: int,
+        hourly: list[HourForecast],
+        hour_local: list[tuple[int, int]],
+        seen: Observed | None,
+    ) -> list[DayForecast]:
+        """Today, tomorrow and the day after (``today`` is a local date ordinal).
+
+        ``hourly`` are the published hours and ``hour_local`` the local (date
+        ordinal, clock hour) of each; ``seen`` is what was measured today so far.
+        """
         issue = self.issue
         if issue is None:
             return []
         out = []
-        for date in (today + 1, today + 2):
+        for date in (today, today + 1, today + 2):
             d = issue.days.get(date - issue.local_date)
             if d is None:
                 continue
             high, low = issue.t0 + d["tmax"], issue.t0 + d["tmin"]
+            on_day = [(h.temperature, hr) for h, (hd, hr) in zip(hourly, hour_local, strict=True) if hd == date]
+            if on_day:
+                temps = [t for t, _ in on_day]
+                if sum(hr in WARM_HOURS for _, hr in on_day) == len(WARM_HOURS):
+                    high = (high + max(temps)) / 2
+                if sum(hr in COLD_HOURS for _, hr in on_day) == len(COLD_HOURS):
+                    low = (low + min(temps)) / 2
+                # never contradict the hourly forecast on the same card
+                high, low = max(high, max(temps)), min(low, min(temps))
+            if date == today and seen is not None:
+                high, low = max(high, seen.high), min(low, seen.low)
             if low > high:
                 high = low = (high + low) / 2
             rain = min(1.0, max(0.0, d["wetday"]))
+            mm = rain * max(0.0, d["rainday"])
+            if date == today and seen is not None and seen.rain_mm is not None:
+                mm += seen.rain_mm
             wind = max(0.0, d["wsday"]) if "wsday" in d else None
             out.append(
                 DayForecast(
@@ -361,7 +411,7 @@ class Forecaster:
                     temperature=round(high, 1),
                     templow=round(low, 1),
                     precipitation_probability=round(100 * rain),
-                    precipitation_amount=round(rain * max(0.0, d["rainday"]), 1),
+                    precipitation_amount=round(mm, 1),
                     wind_speed=None if wind is None else round(wind, 1),
                 )
             )
@@ -372,7 +422,9 @@ class Forecaster:
     # ------------------------------------------------------------------
 
     def dump(self) -> dict:
-        return self.recal.dump()
+        return {**self.recal.dump(), "models": self.models.version}
 
     def load(self, data: object) -> None:
-        self.recal.load(data)
+        """Restore the self-correction, unless it was learned on other models."""
+        if isinstance(data, dict) and data.get("models") == self.models.version:
+            self.recal.load(data)

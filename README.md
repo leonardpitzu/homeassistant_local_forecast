@@ -223,7 +223,13 @@ $$T_w = T \cdot \arctan(0.151977\sqrt{RH + 8.313659}) + \arctan(T + RH) - \arcta
 
 $$T_d = \frac{243.04 \cdot \ln\!\left(\frac{RH}{100}\right) + \frac{17.625 \cdot T}{243.04 + T}}{17.625 - \ln\!\left(\frac{RH}{100}\right) - \frac{17.625 \cdot T}{243.04 + T}}$$
 
-Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed $< 3$ m/s.
+Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed
+$< 3$ m/s.  On its own that rule calls fog far too often: at the training
+airports it says fog 8 % of the time against 1.5 % observed (wet overcast is
+saturated and calm too).  So when the fog model gives the next hour under 5 %,
+the call is vetoed: 60 % of the false fog goes, three in four real fogs stay.
+A stricter veto removes more false fog but starts hiding real fog; one real fog
+in four is the price kept.
 
 ### Frontal detection
 
@@ -258,66 +264,89 @@ Three mechanisms prevent icon flicker on the dashboard:
 ### What forecasts
 
 Sixteen gradient-boosted tree ensembles (scikit-learn `HistGradientBoosting`,
-about 250 trees each), one per quantity:
+tuned per family: up to 600 trees of up to 63 leaves), one per quantity:
 
-| Hourly, 1-24 h | Daily, tomorrow and the day after |
+| Hourly, 1-24 h | Daily: rest of today, tomorrow, the day after |
 |---|---|
 | temperature, dew point (humidity), pressure, wind speed | high, low |
-| chance of a wet hour, mm if wet | chance of a rain day, mm if wet |
+| chance of rain (>= 0.2 mm in the hour), mm if wet | chance of rain (>= 0.2 mm in the window), mm if wet |
 | cloud cover, fog chance, thunder chance | cloud cover, mean wind, thunder chance |
 
-They read about fifty inputs computed from the station's own last 30 days of
+They read about sixty inputs computed from the station's own last 30 days of
 hourly means (`features.py`): the current values, 1-24 h changes, 24 h and
-7-day extremes and means, the pressure anomaly against the last month, hours
-since rain, and the sun - local solar time, sun elevation, day length and
-season (mirrored south of the equator).  Pressure is QNH with the station's
-learned atmospheric tide removed, and the tide is added back to the forecast
-pressure of each hour.
+7-day extremes and means, the pressure anomaly against the last month, rain in
+the last day and hours since rain, sunshine, and the sun itself - local solar
+time, sun elevation, day length and season (mirrored south of the equator).
+Pressure is QNH with the station's learned atmospheric tide removed, and the
+tide is added back to the forecast pressure of each hour.
 
-The models run in pure Python inside Home Assistant (`models/*.json.gz`,
-`model.py`): once per hour, in an executor, about 0.2 s on a Raspberry Pi.
+Sunshine enters as the clear-sky index - measured radiation over what a
+cloudless sky gives at that sun height - divided by the station's own
+clear-sky reference (its 95th percentile over the last 30 days), so a sensor
+that reads 25 % low, or a garden shaded in the morning, gives the same inputs
+as a calibrated pyranometer.
+
+The daily card's "today" joins what the station measured since midnight with
+the rest-of-today model; tomorrow and the day after come from their own daily
+models.  Every day is reconciled with the hourly temperatures that fall on it,
+so the card never shows a high below one of its own hours.
+
+The models run in pure Python inside Home Assistant (`models/*.bin.gz`,
+`model.py`, trees held in typed arrays): once per hour, in an executor, about
+0.5 s on a Raspberry Pi.
 
 ### Training data
 
-Ten years (2016-2025) of hourly METAR reports from 230 airports on six
-continents, sea level to 2.5 km, from the Iowa Environmental Mesonet archive;
-the labels come from what was observed - temperature, dew point, wind,
-pressure, cloud layers, and the present-weather codes for rain, fog and
-thunder.  Rain amounts come from the US stations' gauges.  The author's own
+| Source | What it gives |
+|---|---|
+| Iowa Environmental Mesonet METAR archive: 230 airports on six continents, sea level to 2.5 km, 2016-2025 | temperature, dew point, wind, QNH, cloud layers, observed fog and thunder; US rain gauges |
+| NOAA GHCNh (public domain) | hourly rain-gauge totals for the airports outside the US |
+| Deutscher Wetterdienst open data (CC BY 4.0), 50 stations | all of the above at one site, total cloud, a rain gauge, and global radiation at 25 of them |
+
+Rain is a gauge everywhere: a wet hour, or a wet day, is at least 0.2 mm
+measured - the same thing a Home Assistant rain sensor reports.  Airports
+without a gauge count as stations without a rain sensor.  The author's own
 station (12 years) joins only the final training run and never a scored one.
 
 Any combination of sensors works: during training whole sensors (humidity,
-wind, rain) were hidden at random, so a missing sensor is a normal input, and
-a fresh install with one hour of history falls back on place and season.
+wind, wind direction, rain, solar) were hidden at random, so a missing sensor
+is a normal input, and a fresh install with one hour of history falls back on
+place and season.
 
 ### How good it is
 
-Scored on stations the models never saw (three-fold cross-validation by
-station), against what a single station can do without a forecast
-("persistence": nothing changes) and against the 1.6.0 Bayesian forecaster
-replayed on the same hours:
+Scored on stations the models never saw, and never had a neighbour of in
+training: three-fold cross-validation by region (whole 8 x 8 degree cells),
+with the hyper-parameters tuned inside each fold.  Against what a single
+station can do without a forecast ("persistence": nothing changes) and against
+the 1.6.0 Bayesian forecaster replayed on the same hours:
 
 | | 1-3 h | 4-6 h | 7-12 h | 13-24 h |
 |---|---|---|---|---|
-| Temperature, mean error | 1.0 C | 1.5 C | 1.8 C | 2.1 C |
-| (persistence) | 1.5 C | 3.2 C | 4.7 C | 3.9 C |
-| Rain chance, AUC | 0.91 | 0.86 | 0.83 | 0.79 |
-| Rain chance, skill vs the station's climatology | +0.35 | +0.20 | +0.12 | +0.06 |
+| Temperature, mean error | 0.9 C | 1.4 C | 1.7 C | 2.0 C |
+| (persistence) | 1.4 C | 3.1 C | 4.5 C | 3.8 C |
+| Rain (>= 0.2 mm), AUC | 0.91 | 0.85 | 0.81 | 0.75 |
+| Rain, skill vs the station's climatology | +0.30 | +0.16 | +0.10 | +0.05 |
 
-| | Tomorrow | Day after |
-|---|---|---|
-| High, mean error (persistence) | 2.3 C (2.8) | 2.8 C (3.3) |
-| Low, mean error (persistence) | 2.1 C (2.6) | 2.5 C (3.1) |
-| Rain day, AUC | 0.80 | 0.76 |
+The rain chance beats climatology over the next six hours at every one of the
+131 gauged stations (the worst still +0.04).
 
-Against 1.6.0 on identical hours: temperature 1-12 h 1.53 C vs 2.37 C; rain
-chance Brier 0.063 vs 0.106 with an average forecast of 8 % against 9 %
-observed (1.6.0: 24 %); tomorrow's high 2.3 C vs 5.2 C and low 2.1 C vs
-3.9 C; rain-day AUC 0.80 vs 0.63.
+| | Rest of today | Tomorrow | Day after |
+|---|---|---|---|
+| High, mean error (persistence) | 1.3 C (2.9) | 2.3 C (2.8) | 2.8 C (3.4) |
+| Low, mean error (persistence) | 1.3 C (2.6) | 2.0 C (2.5) | 2.5 C (3.1) |
+| Rain (>= 0.2 mm), AUC | 0.87 | 0.77 | 0.70 |
 
-Fog and thunder are rare and cannot be placed in the right hour from one
-station, so their icons show only when the risk is high; a thunder day is
-predictable (AUC 0.86) and shows on the daily forecast.
+Against 1.6.0 on identical hours: temperature 1-12 h 1.45 C vs 2.38 C; rain
+chance averaging 6 % against 6 % observed (1.6.0: 22 %), Brier score 0.049 vs
+0.092; tomorrow's high 2.3 C vs 5.2 C, low 2.0 C vs 3.9 C; rain day AUC 0.79
+vs 0.61.
+
+Sunshine, where a station measures it, improves cloud cover by 5-10 %,
+tonight's low by 3 % and temperature by up to 1 %.  Fog and thunder are rare
+and cannot be placed in the right hour from one station, so their icons show
+less often than they happen; a thunder day is predictable (AUC 0.84) and shows
+on the daily forecast.
 
 ### At one backyard station, twelve years
 
@@ -329,44 +358,62 @@ every January 1st (a new install each year):
 
 | | 1-3 h | 4-6 h | 7-12 h | 13-24 h |
 |---|---|---|---|---|
-| Temperature (persistence) | 1.3 C (1.9) | 1.9 C (4.1) | 2.2 C (5.9) | 2.5 C (4.8) |
+| Temperature (persistence) | 1.2 C (1.9) | 1.8 C (4.1) | 2.1 C (5.9) | 2.4 C (4.8) |
 | Dew point (persistence) | 0.9 C (0.9) | 1.3 C (1.7) | 1.6 C (2.2) | 2.0 C (2.4) |
 | Wind (persistence) | 0.4 m/s (0.4) | 0.4 m/s (0.5) | 0.5 m/s (0.6) | 0.5 m/s (0.6) |
-| Rain chance, skill vs climatology | +0.23 | +0.12 | +0.08 | +0.05 |
+| Rain chance, skill vs climatology | +0.23 | +0.12 | +0.08 | +0.04 |
 
-| | Tomorrow | Day after |
-|---|---|---|
-| High (persistence / climatology) | 3.8 C (4.4 / 5.1) | 4.3 C (5.1 / 5.1) |
-| Low (persistence / climatology) | 1.9 C (2.3 / 2.9) | 2.3 C (2.8 / 2.9) |
-| Rain day, skill vs climatology | +0.09 | +0.02 |
+| | Rest of today | Tomorrow | Day after |
+|---|---|---|---|
+| High (persistence / climatology) | 2.3 C (5.6 / -) | 3.7 C (4.4 / 5.1) | 4.3 C (5.1 / 5.1) |
+| Low (persistence / climatology) | 1.3 C (3.5 / -) | 1.8 C (2.3 / 2.9) | 2.2 C (2.8 / 2.9) |
+| Rain day, skill vs climatology | | +0.10 | +0.005 |
 
-Against 1.6.0 on the same hours: temperature +1 h 1.0 C vs 1.3 C, +12 h
-2.3 C vs 3.8 C; rain chance 1-12 h skill +0.13 vs -0.76 with an average of
-5 % against 5 % observed (1.6.0: 20 %); tomorrow's high 3.8 C vs 7.3 C.
+This archive has no rain gauge - only 30-minute snapshots of a rain sensor -
+so its rain is a different measure from the gauges the models learned; the
+rain figures above are after the self-correction has adapted to it, which is
+exactly what it does with a real sensor in Home Assistant.  Two days out, rain
+is better than luck, but only just: one station sees about 100 km, and
+weather two days away is still 500 km upwind.
 
-The self-correction is what makes a backyard work: this anemometer sees 40 %
-of the wind an airport mast does, and its thermometer runs warm or cold by
-time of day - both learned within weeks.
+Against 1.6.0 on the same hours: temperature +1 h 0.9 C vs 1.3 C, +12 h
+2.2 C vs 3.8 C; rain chance 1-12 h skill +0.12 vs -0.75 with an average of
+5 % against 5 % observed (1.6.0: 20 %); tomorrow's high 3.7 C vs 7.5 C.
 
 ### Self-correction
 
-The models learned airports.  A backyard station sits lower or higher, in a
-hollow or on a roof, and its rain sensor counts rain differently from an
-observer.  So every forecast the station can verify is verified once its
-hour (or day) has been measured, and a small correction is learned per
-forecast range (`recal.py`): an additive bias for temperature and dew point,
-a scale for wind, a shift in log-odds for the rain chance (only with a rain
-sensor), and the same for the daily high, low and rain day.  Every correction
-is bounded, so a broken sensor cannot teach the forecast nonsense, and starts
-at zero.  The state is visible in the diagnostics download.
+The models learned airports and weather services.  A backyard station sits
+lower or higher, in a hollow or on a roof, in the sun at noon or in a cold
+pocket at night, and its anemometer is not on a 10 m mast.  So every forecast
+the station can verify is verified once its hour (or day) has been measured,
+and a small correction is learned per forecast range (`recal.py`): a bias for
+temperature and dew point per three hours of the day, a scale for wind, a
+shift in log-odds for the rain chance (only with a rain sensor), and the same
+for the daily high, low and rain day.  Every correction is bounded, so a
+broken sensor cannot teach the forecast nonsense, and starts neutral.  It
+starts over when the models change (an update that retrains them): a
+correction learned for other models does not fit these.  The state, with the
+fingerprint of the models it belongs to, is in the diagnostics download.
+
+The learning rates were chosen on 24 held-out stations on four continents plus
+the backyard one, replaying each as a fresh install every year: they help on
+average and cost no station more than ~0.7 %.  Mean error change: temperature
+-5 to -3 % (backyard -10 to -4 %), dew point -3 %, wind -3 to -4 % (backyard
+-80 %: its anemometer sees 40 % of an airport's wind), rain chance -1 %
+(backyard -3 to -4 %).
 
 ### History
 
 The hourly history behind the inputs is kept for 30 days and persisted across
 restarts.  On a new install it is seeded from the recorder's long-term
 statistics (sensors with a `state_class`), so the forecast starts with weeks
-of history instead of none.  If the newest hour has no readings yet, the
-current values stand in for it: there is always a forecast to show.
+of history instead of none.  Every restart also fills, per hour, the channels
+the stored history lacks - a rain or solar sensor added later, or an upgrade -
+and never overwrites a live reading.  Today's high and low on the daily card
+are the highest and lowest readings since midnight (the recorder's hourly
+max/min for seeded hours), not hourly means.  If the newest hour has no
+readings yet, the current values stand in for it: there is always a forecast
+to show.
 
 ### Retraining
 

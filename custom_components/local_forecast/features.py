@@ -13,7 +13,13 @@ normal input, not an error.
 
 Pressure is QNH with the station's own learned tide removed (``tide``), so a
 tendency here carries weather only.  Time of day is local solar time from
-longitude, never the timezone.
+longitude, never the timezone.  Rain is measured rain: ``rain`` is mm in the
+hour, ``wet`` is 1 from WET_MM up (the gauge-based label the rain models were
+trained on).  Sunshine enters as the clear-sky index: measured radiation over
+what a cloudless sky would give at that sun height, divided by the station's
+own clear-sky reference (the 95th percentile of its daylight index over the
+last 30 days), so a sensor that reads 25 % low - shading, calibration, a light
+sensor standing in for a pyranometer - looks the same as a perfect one.
 
 No Home Assistant dependencies — pure Python + math.
 """
@@ -26,7 +32,12 @@ import math
 NAN = float("nan")
 HISTORY_HOURS = 720  # 30 days: the longest window any feature reads
 
-CHANNELS = ("t", "td", "ws", "wd", "p", "wet")
+CHANNELS = ("t", "td", "ws", "wd", "p", "wet", "rain", "solar")
+WET_MM = 0.2  # a wet hour, and a wet day: at least this much measured rain
+CLEAR_SKY_MIN_ELEV = 10.0  # below this the clear-sky index is too noisy to use
+SUN_REF_QUANTILE = 0.95  # of the last 30 days' daylight index: "a clear hour here"
+SUN_REF_MIN_SAMPLES = 60
+SUN_REF_RANGE = (0.5, 1.5)
 
 BASE = (
     # where and when
@@ -41,10 +52,12 @@ BASE = (
     # wind
     "ws0", "ws3", "ws24", "dws3", "wsin", "wcos",
     # precipitation
-    "wet0", "wet3", "wet24", "since", "wetfrac30",
+    "wet0", "wet3", "wet24", "since", "wetfrac30", "rain24",
+    # sunshine (clear-sky index)
+    "kc0", "kc3", "kc24", "kclast",
 )  # fmt: skip
 HOURLY = (*BASE, "lead", "thsin", "thcos", "tsun")
-DAILY = (*BASE, "dofs", "hleft", "tdaylen", "tnoon")
+DAILY = (*BASE, "dofs", "hleft", "hspan", "tdaylen", "tnoon")
 
 _J2000 = 946728000.0  # 2000-01-01 12:00 UTC
 
@@ -86,6 +99,29 @@ def dew_point(t: float, rh: float) -> float:
     rh = max(1.0, min(100.0, rh))
     g = math.log(rh / 100.0) + 17.625 * t / (243.04 + t)
     return 243.04 * g / (17.625 - g)
+
+
+def clear_sky(elev_deg: float) -> float:
+    """Global radiation under a cloudless sky, W/m^2 (Haurwitz 1945)."""
+    if elev_deg <= 0:
+        return 0.0
+    c = math.sin(math.radians(elev_deg))
+    return 1098.0 * c * math.exp(-0.057 / c)
+
+
+def clear_index(radiation: float, elev_deg: float) -> float:
+    """Measured over clear-sky radiation (0 overcast .. ~1 clear); NaN when the sun is low."""
+    if radiation != radiation or elev_deg < CLEAR_SKY_MIN_ELEV:
+        return NAN
+    return max(0.0, min(1.5, radiation / clear_sky(elev_deg)))
+
+
+def quantile(values: Sequence[float], q: float) -> float:
+    """Linear-interpolated quantile (numpy's default method)."""
+    v = sorted(values)
+    x = q * (len(v) - 1)
+    i = int(x)
+    return v[i] if i + 1 >= len(v) else v[i] + (x - i) * (v[i + 1] - v[i])
 
 
 def _ok(v: float) -> bool:
@@ -210,6 +246,23 @@ def base(
             since = 168.0
     f["since"] = since
     f["wetfrac30"] = _mean(wet, 720, 168)
+    rain24 = _tail(hist["rain"], 24, 18)
+    f["rain24"] = sum(rain24) if rain24 else NAN
+
+    sol = hist["solar"]
+    kc = [NAN] * min(HISTORY_HOURS, len(sol))
+    for k in range(len(kc)):
+        if _ok(sol[-1 - k]):
+            kc[k] = clear_index(sol[-1 - k], solar(ts - 3600.0 * k, lat, lon)[1])
+    seen = [v for v in kc if _ok(v)]
+    ref = 1.0
+    if len(seen) >= SUN_REF_MIN_SAMPLES:
+        ref = max(SUN_REF_RANGE[0], min(SUN_REF_RANGE[1], quantile(seen, SUN_REF_QUANTILE)))
+    day = [v / ref if _ok(v) else NAN for v in kc[:24]] + [NAN] * max(0, 24 - len(kc))
+    f["kc0"] = day[0]
+    f["kc3"] = _mean(day[2::-1], 3, 1)
+    f["kc24"] = _mean(day[::-1], 24, 3)
+    f["kclast"] = next((v for v in day[:18] if _ok(v)), NAN)
     return f
 
 
@@ -228,11 +281,17 @@ def hourly_row(f: dict[str, float], ts: float, lead: int, lat: float, lon: float
 def daily_row(
     f: dict[str, float], ts: float, offset: int, hours_to_midnight: float, lat: float, lon: float
 ) -> list[float]:
-    """Inputs for a daily model: local day ``offset`` (1 = tomorrow) after ``ts``.
+    """Inputs for a daily model: local day ``offset`` after ``ts``.
 
-    ``hours_to_midnight`` is from the issue time to the next local midnight.
+    Offset 0 is the rest of today (from now to midnight), 1 tomorrow, 2 the day
+    after.  ``hours_to_midnight`` runs from the issue time to the next local
+    midnight.
     """
-    hleft = hours_to_midnight + 24.0 * (offset - 1)
-    _hour, _sun, noon, daylen, _season = solar(ts + 3600.0 * (hleft + 12.0), lat, lon)
-    extra = {"dofs": float(offset), "hleft": hleft, "tdaylen": daylen, "tnoon": noon}
+    if offset == 0:
+        hleft, hspan, middle = 0.0, hours_to_midnight, hours_to_midnight - 12.0
+    else:
+        hleft, hspan = hours_to_midnight + 24.0 * (offset - 1), 24.0
+        middle = hleft + 12.0
+    _hour, _sun, noon, daylen, _season = solar(ts + 3600.0 * middle, lat, lon)
+    extra = {"dofs": float(offset), "hleft": hleft, "hspan": hspan, "tdaylen": daylen, "tnoon": noon}
     return [f[k] if k in f else extra[k] for k in DAILY]

@@ -144,6 +144,12 @@ STORM_WIND: Final = 8.0  # m/s
 HISTORY_MAX_RECORDS: Final = 2000
 HISTORY_SECONDS: Final = 4 * 3600.0
 
+# A rain rate (mm/h and its kin).  The models read rain as mm in each hour,
+# taken from the mean rate; a running total (mm, in) would make every hour after
+# the first shower look wet, so such a sensor is refused (config flow) and
+# ignored (coordinator).
+RAIN_RATE_UNITS: Final = frozenset({"mm/h", "mm/d", "in/h", "in/d", "mm/s", "in/s"})
+
 # --- Forecast horizon ---
 FORECAST_HOURS: Final = 24
 

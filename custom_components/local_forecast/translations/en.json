@@ -20,7 +20,8 @@
     },
     "error": {
       "sensor_not_found": "Sensor entity not found",
-      "invalid_elevation": "Elevation must be between -500 and 9000 m"
+      "invalid_elevation": "Elevation must be between -500 and 9000 m",
+      "rain_not_a_rate": "Pick a rain rate sensor (mm/h), not an accumulated rain amount (mm)"
     }
   },
   "options": {
@@ -44,7 +45,8 @@
     },
     "error": {
       "sensor_not_found": "Sensor entity not found",
-      "invalid_elevation": "Elevation must be between -500 and 9000 m"
+      "invalid_elevation": "Elevation must be between -500 and 9000 m",
+      "rain_not_a_rate": "Pick a rain rate sensor (mm/h), not an accumulated rain amount (mm)"
     }
   },
   "entity": {

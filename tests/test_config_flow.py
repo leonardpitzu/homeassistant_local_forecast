@@ -7,7 +7,7 @@ options flow is the only place they can un-wire an optional sensor again.
 from __future__ import annotations
 
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
+from homeassistant.const import ATTR_DEVICE_CLASS, ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 import pytest
@@ -17,6 +17,7 @@ from local_forecast.const import (
     CONF_ELEVATION,
     CONF_HUMIDITY_SENSOR,
     CONF_PRESSURE_SENSOR,
+    CONF_RAIN_RATE_SENSOR,
     CONF_TEMPERATURE_SENSOR,
     DOMAIN,
 )
@@ -27,6 +28,9 @@ def sources(hass: HomeAssistant):
     hass.states.async_set("sensor.pressure", "1013.2", {ATTR_UNIT_OF_MEASUREMENT: "hPa"})
     hass.states.async_set("sensor.temperature", "18.4", {ATTR_UNIT_OF_MEASUREMENT: "°C"})
     hass.states.async_set("sensor.humidity", "62", {ATTR_UNIT_OF_MEASUREMENT: "%"})
+    hass.states.async_set("sensor.rain_rate", "0", {ATTR_UNIT_OF_MEASUREMENT: "mm/h"})
+    amount = {ATTR_UNIT_OF_MEASUREMENT: "mm", ATTR_DEVICE_CLASS: "precipitation"}
+    hass.states.async_set("sensor.rain_today", "3.1", amount)
 
 
 async def test_user_flow_creates_an_entry(hass: HomeAssistant):
@@ -55,6 +59,7 @@ async def test_user_flow_creates_an_entry(hass: HomeAssistant):
     [
         ({CONF_PRESSURE_SENSOR: "sensor.nope"}, CONF_PRESSURE_SENSOR),
         ({CONF_ELEVATION: 12000}, CONF_ELEVATION),
+        ({CONF_RAIN_RATE_SENSOR: "sensor.rain_today"}, CONF_RAIN_RATE_SENSOR),  # an amount, not a rate
     ],
 )
 async def test_user_flow_rejects_bad_input(hass: HomeAssistant, overrides, field):
@@ -70,6 +75,21 @@ async def test_user_flow_rejects_bad_input(hass: HomeAssistant, overrides, field
 
     assert result["type"] is FlowResultType.FORM
     assert field in result["errors"]
+
+
+async def test_user_flow_accepts_a_rain_rate(hass: HomeAssistant):
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_PRESSURE_SENSOR: "sensor.pressure",
+            CONF_TEMPERATURE_SENSOR: "sensor.temperature",
+            CONF_RAIN_RATE_SENSOR: "sensor.rain_rate",
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_RAIN_RATE_SENSOR] == "sensor.rain_rate"
 
 
 async def test_options_flow_can_clear_an_optional_sensor(hass: HomeAssistant):

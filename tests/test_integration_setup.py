@@ -258,7 +258,7 @@ async def test_unconfigured_channels_report_none(hass):
     assert all(item["humidity"] is None and item["wind_speed"] is None for item in meteogram)
 
 
-def _daily_weather(generated: datetime, today_observed=None) -> LocalForecastWeather:
+def _daily_weather(generated: datetime) -> LocalForecastWeather:
     hourly = [
         HourForecast(
             hours_ahead=h,
@@ -277,35 +277,25 @@ def _daily_weather(generated: datetime, today_observed=None) -> LocalForecastWea
     daily = [
         DayForecast(date=today + k, condition="rainy", temperature=20.0 + k, templow=10.0 + k,
                     precipitation_probability=60, precipitation_amount=3.2, wind_speed=2.5)
-        for k in (1, 2)
+        for k in (0, 1, 2)
     ]  # fmt: skip
     weather = LocalForecastWeather.__new__(LocalForecastWeather)
-    weather.coordinator = SimpleNamespace(
-        data=SimpleNamespace(generated=generated, hourly=hourly, daily=daily, today_observed=today_observed),
-    )
+    weather.coordinator = SimpleNamespace(data=SimpleNamespace(generated=generated, hourly=hourly, daily=daily))
     return weather
 
 
-async def test_daily_today_ends_at_local_midnight():
-    """At 14:30 the +10 h hour is 00:30 tomorrow, not the last hour of today."""
-    weather = _daily_weather(datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone()))
+async def test_daily_card_gets_today_and_two_days_on_their_dates():
+    """Today is dated now (never in the past for the card), the others at noon."""
+    generated = datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone())
+    today, tomorrow, after = await _daily_weather(generated).async_forecast_daily()
 
-    today, tomorrow, after = await weather.async_forecast_daily()
-
-    assert today["native_temperature"] == 9.0
-    assert (tomorrow["native_temperature"], tomorrow["native_templow"]) == (21.0, 11.0)
+    assert today["datetime"] == generated.isoformat()
     assert tomorrow["datetime"].startswith("2026-09-28T12:00")
     assert after["datetime"].startswith("2026-09-29T12:00")
+    assert (tomorrow["native_temperature"], tomorrow["native_templow"]) == (21.0, 11.0)
     assert tomorrow["precipitation_probability"] == 60
-
-
-async def test_daily_today_includes_what_was_measured():
-    """This morning's 4 C low stays today's low after the forecast hours warm up."""
-    weather = _daily_weather(datetime(2026, 9, 27, 14, 30, tzinfo=dt_util.get_default_time_zone()), (12.0, 4.0))
-
-    today, *_ = await weather.async_forecast_daily()
-
-    assert (today["native_temperature"], today["native_templow"]) == (12.0, 1.0)
+    # Humidity and pressure come from the forecast hours that fall on the day.
+    assert tomorrow["humidity"] == 60.0 and tomorrow["native_pressure"] == 1013.0
 
 
 async def test_high_altitude_station_is_not_rejected(hass):
@@ -574,3 +564,4 @@ async def test_diagnostics_report_the_learned_tide(hass, sensors, hass_client):
     assert set(data["tide"]) >= {"tide_now_hpa", "s1_hpa", "s2_hpa", "s3_hpa", "site_gain_hpa_per_k", "learned_days"}
     assert data["history_hours"] >= 1
     assert data["self_correction"]["verified"] == 0
+    assert len(data["self_correction"]["models"]) == 12

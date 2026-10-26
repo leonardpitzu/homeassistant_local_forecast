@@ -10,6 +10,7 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
+from homeassistant.const import ATTR_DEVICE_CLASS, ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 import voluptuous as vol
@@ -31,6 +32,7 @@ from .const import (
     DOMAIN,
     PRESSURE_ABSOLUTE,
     PRESSURE_RELATIVE,
+    RAIN_RATE_UNITS,
 )
 
 SENSOR_SELECTOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
@@ -63,7 +65,20 @@ def _validate(user_input: dict[str, Any], hass: HomeAssistant) -> dict[str, str]
             errors[key] = "sensor_not_found"
     if not -500 <= user_input.get(CONF_ELEVATION, 0) <= 9000:
         errors[CONF_ELEVATION] = "invalid_elevation"
+    if (rain := user_input.get(CONF_RAIN_RATE_SENSOR)) and not _is_rain_rate(hass, rain):
+        errors[CONF_RAIN_RATE_SENSOR] = "rain_not_a_rate"
     return errors
+
+
+def _is_rain_rate(hass: HomeAssistant, entity_id: str) -> bool:
+    """Whether the entity reports a rain rate rather than an accumulated amount."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return True  # not loaded yet: nothing to judge, the coordinator skips bad units
+    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+    if state.attributes.get(ATTR_DEVICE_CLASS) == "precipitation":
+        return False  # an amount, whatever the unit
+    return unit is None or unit in RAIN_RATE_UNITS
 
 
 def _cleaned(user_input: dict[str, Any]) -> dict[str, Any]:

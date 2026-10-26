@@ -25,26 +25,8 @@ from .coordinator import (
     LocalForecastConfigEntry,
     LocalForecastCoordinator,
 )
-from .forecast import HourForecast
 
 _LOGGER = logging.getLogger(__name__)
-
-# Severity ranking used to pick the "worst" condition of a day for the daily
-# forecast card (higher = more severe, what a non-technical family cares about).
-_CONDITION_SEVERITY: dict[str, int] = {
-    "lightning-rainy": 11,
-    "exceptional": 10,
-    "pouring": 9,
-    "snowy": 8,
-    "snowy-rainy": 7,
-    "rainy": 6,
-    "fog": 5,
-    "windy": 4,
-    "cloudy": 3,
-    "partlycloudy": 2,
-    "clear-night": 1,
-    "sunny": 0,
-}
 
 
 async def async_setup_entry(
@@ -158,46 +140,31 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
     async def async_forecast_daily(self) -> list[Forecast] | None:
         """Today, tomorrow and the day after.
 
-        Today combines what has been measured since midnight with the hours
-        still to come; tomorrow and the day after come from the daily models.
+        Today joins what was measured since midnight with the forecast for the
+        rest of the day; every day comes from the daily models, reconciled with
+        the hourly forecast where the two meet (see forecast.py).
         """
-        if not (data := self._data) or not data.hourly:
+        if not (data := self._data) or not data.hourly or not data.daily:
             return None
 
         now = data.generated
-        today = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == now.date()]
-        if not today:  # the last minutes before midnight
-            today = data.hourly[:1]
-        temps = [h.temperature for h in today]
-        if data.today_observed is not None:
-            temps += list(data.today_observed)
-        condition = _worst_condition(today)
-        days: list[Forecast] = [
-            Forecast(  # type: ignore[typeddict-unknown-key]
-                datetime=now.replace(microsecond=0).isoformat(),
-                # Daily forecasts are always daytime.
-                condition="sunny" if condition == "clear-night" else condition,
-                native_temperature=round(max(temps), 1),
-                native_templow=round(min(temps), 1),
-                precipitation_probability=max(h.precipitation_probability for h in today),
-                native_precipitation=round(sum(h.precipitation_amount for h in today), 1),
-                humidity=_mean([h.humidity for h in today]),
-                native_pressure=_mean([h.pressure for h in today], 1),
-                native_wind_speed=_mean([h.wind_speed for h in today], 1),
-                wind_bearing=today[0].wind_bearing,
-                is_daytime=True,
-            )
-        ]
-
+        days: list[Forecast] = []
         for day in data.daily:
             date = datetime.fromordinal(day.date).date()
-            hours = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == date]
             # Humidity and pressure have no daily model: the forecast hours that
-            # reach into the day stand for it.
-            near = hours or data.hourly[-1:]
+            # fall on the day stand for it.
+            near = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == date]
+            near = near or data.hourly[-1:]
+            # Today is dated now, so the card never treats it as past; the
+            # other days at noon.
+            when = (
+                now.replace(microsecond=0)
+                if date == now.date()
+                else datetime(date.year, date.month, date.day, 12, tzinfo=now.tzinfo)
+            )
             days.append(
                 Forecast(  # type: ignore[typeddict-unknown-key]
-                    datetime=datetime(date.year, date.month, date.day, 12, 0, 0, tzinfo=now.tzinfo).isoformat(),
+                    datetime=when.isoformat(),
                     condition=day.condition,
                     native_temperature=day.temperature,
                     native_templow=day.templow,
@@ -206,7 +173,7 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
                     humidity=_mean([h.humidity for h in near]),
                     native_pressure=_mean([h.pressure for h in near], 1),
                     native_wind_speed=day.wind_speed,
-                    wind_bearing=today[0].wind_bearing,
+                    wind_bearing=data.hourly[0].wind_bearing,
                     is_daytime=True,
                 )
             )
@@ -220,18 +187,3 @@ def _mean(values: list[float | None], ndigits: int | None = None) -> float | Non
     if not values or None in values:
         return None
     return round(sum(values) / len(values), ndigits)
-
-
-def _worst_condition(hours: list[HourForecast]) -> str:
-    """Pick the most severe condition from a set of hourly forecasts.
-
-    Severity order (what matters to a non-technical family):
-    lightning-rainy > exceptional > pouring > snowy > snowy-rainy > rainy >
-    fog > windy > cloudy > partlycloudy > clear-night > sunny
-    """
-    if not hours:
-        return "cloudy"
-    return max(
-        (h.condition for h in hours),
-        key=lambda c: _CONDITION_SEVERITY.get(c, 0),
-    )

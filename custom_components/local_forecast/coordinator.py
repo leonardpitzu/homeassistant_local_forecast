@@ -59,15 +59,16 @@ from .const import (
     ISA_SEA_LEVEL_TEMP_K,
     LAPSE_RATE,
     PRESSURE_RELATIVE,
+    RAIN_RATE_UNITS,
     S_CLOUDY,
     S_FOG,
     STORAGE_VERSION,
     UPDATE_DEBOUNCE_SECONDS,
     UPDATE_INTERVAL_MINUTES,
 )
-from .features import HISTORY_HOURS
-from .forecast import DayForecast, Forecaster, HourForecast, Sensors
-from .history import HourlyHistory, issue_hour
+from .features import HISTORY_HOURS, WET_MM
+from .forecast import DayForecast, Forecaster, HourForecast, Observed, Sensors
+from .history import HourlyHistory, hour_of, issue_hour
 from .model import ModelSet
 from .pressure_history import PressureHistory
 from .state_estimator import SensorReading, StateEstimator
@@ -81,6 +82,8 @@ _CONVERTERS: Final = {
     CONF_PRESSURE_SENSOR: (PressureConverter, UnitOfPressure.HPA),
     CONF_TEMPERATURE_SENSOR: (TemperatureConverter, UnitOfTemperature.CELSIUS),
     CONF_WIND_SPEED_SENSOR: (SpeedConverter, UnitOfSpeed.METERS_PER_SECOND),
+    # HA files rain rates (mm/h, in/h, mm/d ...) under speed.
+    CONF_RAIN_RATE_SENSOR: (SpeedConverter, "mm/h"),
 }
 
 _SENSOR_KEYS: Final = (
@@ -153,9 +156,7 @@ class ForecastResult:
     wind_bearing: float | None
     dew_point: float | None
     hourly_dicts: list[dict[str, Any]] = field(default_factory=list)
-    daily: list[DayForecast] = field(default_factory=list)
-    # (high, low) observed so far today, for the daily card's "today".
-    today_observed: tuple[float, float] | None = None
+    daily: list[DayForecast] = field(default_factory=list)  # today, tomorrow, the day after
 
 
 class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
@@ -296,6 +297,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             "ws": CONF_WIND_SPEED_SENSOR,
             "p": CONF_PRESSURE_SENSOR,
             "rain": CONF_RAIN_RATE_SENSOR,
+            "solar": CONF_SOLAR_RADIATION_SENSOR,
         }
         ids = {name: self._config[key] for name, key in keys.items() if self._config.get(key)}
         if not ids:
@@ -310,7 +312,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             set(ids.values()),
             "hour",
             None,
-            {"mean"},
+            {"mean", "max", "min"},
         )
         rows: dict[int, dict[str, float | None]] = {}
         for name, sid in ids.items():
@@ -328,7 +330,11 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
                 if isinstance(start_ts, datetime):
                     start_ts = start_ts.timestamp()
                 # A statistic covers [start, start + 1 h); it seeds the hour it ends on.
-                rows.setdefault(int(start_ts) + 3600, {})[name] = value
+                seed = rows.setdefault(int(start_ts) + 3600, {})
+                seed[name] = value
+                if name == "t":  # the hour's real peaks, for today's high and low
+                    seed["tmax"] = self._parse(row.get("max"), unit, keys[name])
+                    seed["tmin"] = self._parse(row.get("min"), unit, keys[name])
         added = self.history.seed(sorted(rows.items()))
         _LOGGER.debug("Seeded %d hours of history from statistics", added)
 
@@ -470,6 +476,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             wind_direction=r.wind_direction_deg,
             pressure=r.pressure_hpa,
             rain_rate=r.rain_rate_mmh,
+            solar=r.solar_radiation_wm2,
         )
 
     def _to_sea_level(self, pressure: float) -> float:
@@ -496,6 +503,8 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         except (ValueError, TypeError):
             return None
 
+        if config_key == CONF_RAIN_RATE_SENSOR and unit and unit not in RAIN_RATE_UNITS:
+            return None  # an accumulated amount, not a rate: unusable as rain input
         converter = _CONVERTERS.get(config_key)
         if converter is not None and unit:
             cls, target = converter
@@ -555,6 +564,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
                     wind_speed_ms=s.wind_speed if self.has_source(CONF_WIND_SPEED_SENSOR) else None,
                     wind_direction_deg=s.wind_direction if self.has_source(CONF_WIND_DIRECTION_SENSOR) else None,
                     rain_rate_mmh=s.rain_rate if self.has_source(CONF_RAIN_RATE_SENSOR) else None,
+                    solar_radiation_wm2=s.solar_radiation if self.has_source(CONF_SOLAR_RADIATION_SENSOR) else None,
                 ),
             )
         local = dt_util.as_local(datetime.fromtimestamp(issue, UTC))
@@ -584,15 +594,28 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             start = int(dt_util.start_of_local_day(day).timestamp())
             end = int(dt_util.start_of_local_day(day + timedelta(days=1)).timestamp())
             # An hour belongs to the day it ends in, as in training.
-            temps = [t for _h, t in self.history.observed(start + 1, end + 1)]
-            if len(temps) < 20:
+            hours = self.history.observed(start + 1, end + 1)
+            if len(hours) < 20:
                 continue
-            series = self.history.series(issue_hour(end + 1800))
-            hours = (end - start) // 3600
-            wet_vals = [w for w in series["wet"][-hours:] if w == w]
-            wet = (1.0 if sum(wet_vals) >= 2 else 0.0) if len(wet_vals) >= 20 else None
+            temps = [t for _h, t, _r in hours]
+            rain = [r for _h, _t, r in hours if r == r]
+            wet = (1.0 if sum(rain) >= WET_MM else 0.0) if len(rain) >= 20 else None
             out.append((date, max(temps), min(temps), wet))
         return out
+
+    def _seen_today(self, now_local: datetime) -> Observed | None:
+        """What the station measured since local midnight: the real peaks, not hourly means."""
+        midnight = int(dt_util.start_of_local_day(now_local).timestamp())
+        end = hour_of(now_local.timestamp()) + 1  # the hour still filling counts too
+        peaks = self.history.peaks(midnight + 1, end)
+        if peaks is None:
+            return None
+        rain = [r for _h, _t, r in self.history.observed(midnight + 1, end) if r == r]
+        return Observed(
+            high=peaks[0],
+            low=peaks[1],
+            rain_mm=sum(rain) if rain and self.has_source(CONF_RAIN_RATE_SENSOR) else None,
+        )
 
     def _run_forecast(self) -> ForecastResult:
         """Current conditions from the estimator, the forecast from the models."""
@@ -629,8 +652,14 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         daily: list[DayForecast] = []
         if self.forecaster is not None:
             hourly = self.forecaster.hours(now_local.timestamp(), self.tide.hpa_at, sensors, bearing, FORECAST_HOURS)
+            local = [now_local + timedelta(hours=h.hours_ahead) for h in hourly]
             daily = self.forecaster.days(
-                sensors, s.humidity if sensors.humidity else None, now_local.date().toordinal()
+                sensors,
+                s.humidity if sensors.humidity else None,
+                now_local.date().toordinal(),
+                hourly,
+                [(t.date().toordinal(), t.hour) for t in local],
+                self._seen_today(now_local),
             )
 
         if hourly:
@@ -644,9 +673,6 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             )
 
         self._record_pressure(s.pressure, s.temperature)
-
-        midnight = int(dt_util.start_of_local_day(now_local).timestamp())
-        seen = [t for _h, t in self.history.observed(midnight + 1, int(now_local.timestamp()) + 1)]
 
         return ForecastResult(
             generated=now_local,
@@ -662,7 +688,6 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
             dew_point=(s.dew_point if sensors.humidity else None),
             hourly_dicts=_hourly_dicts(hourly, now_local),
             daily=daily,
-            today_observed=(round(max(seen), 1), round(min(seen), 1)) if seen else None,
         )
 
     def _record_pressure(self, pressure: float, temperature: float) -> None:
