@@ -1,5 +1,5 @@
 # Testing dependencies for Local Weather Forecast integration
-pytest>=9.0.0
+pytest>=9.1.1
 pytest-asyncio>=0.24.0
 pytest-cov>=6.0.0
 pytest-homeassistant-custom-component  # boots a real HA instance in tests
