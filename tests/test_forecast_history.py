@@ -1,5 +1,6 @@
 """Hourly history: binning, persistence, seeding."""
 
+import json
 import math
 
 import pytest
@@ -71,6 +72,22 @@ def test_dump_load_round_trip():
     for c in a:
         for x, y in zip(a[c], b[c], strict=True):
             assert (math.isnan(x) and math.isnan(y)) or x == pytest.approx(y, abs=0.01)
+
+
+def test_a_restart_mid_hour_keeps_each_reading_s_weight():
+    """40 wet minutes, a restart, 3 dry readings: the hour stays wet, as it was."""
+    h = HourlyHistory()
+    for minute in range(-29, 11):
+        h.add(T0 + minute * 60, temperature=10.0, pressure=1000.0, rain_rate=0.6)
+    h.add(T0 - H, temperature=9.0, pressure=1000.0)
+    g = HourlyHistory()
+    g.load(json.loads(json.dumps(h.dump())))
+    for minute in (12, 13, 14):
+        g.add(T0 + minute * 60, temperature=20.0, pressure=1000.0, rain_rate=0.0)
+    s = g.series(T0)
+    assert s["t"][-1] == pytest.approx((40 * 10.0 + 3 * 20.0) / 43)
+    assert s["rain"][-1] == pytest.approx(40 * 0.6 / 43) and s["wet"][-1] == 1.0
+    assert [len(row) for row in h.dump()] == [11, 12]  # only the newest hour carries counts
 
 
 def test_a_2_0_0_save_loads_without_inventing_rain():

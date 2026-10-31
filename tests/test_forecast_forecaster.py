@@ -204,6 +204,65 @@ def test_self_correction_is_dropped_when_the_models_change(models):
         assert g.recal.scale[0] == 1.0 and g.recal.verified == 0
 
 
+def _restarted(models: ModelSet, f: Forecaster) -> Forecaster:
+    """A new forecaster restored from what f saved, through JSON like the store."""
+    g = Forecaster(models, LAT, LON, ELEV)
+    g.load(json.loads(json.dumps(f.dump())))
+    g.load_pending(json.loads(json.dumps(f.dump_pending())))
+    return g
+
+
+def test_forecasts_awaiting_verification_survive_a_restart(models):
+    """A restart between issue and verification teaches exactly what no restart would."""
+    sensors = Sensors(humidity=True, wind=True, wind_direction=True, rain=True)
+    history = _history()
+    f = _forecaster(models, sensors, history)
+    for k in range(1, 4):
+        history.add(NOW + k * H, temperature=30.0, humidity=70.0, wind_speed=6.0, pressure=1015.0, rain_rate=1.0)
+    f.verify(history, NOW + H, sensors)  # one lead learned before the restart
+    g = _restarted(models, f)
+    f.verify(history, NOW + 3 * H, sensors)
+    g.verify(history, NOW + 3 * H, sensors)
+    assert g.recal.verified == f.recal.verified > 0
+    for a, b in ((g.recal.shift["t"], f.recal.shift["t"]), (g.recal.shift["td"], f.recal.shift["td"])):
+        assert a == [pytest.approx(row, abs=1e-3) for row in b]
+    assert g.recal.scale == pytest.approx(f.recal.scale, abs=1e-3)
+    assert g.recal.logit == pytest.approx(f.recal.logit, abs=1e-3)
+    assert max(g.recal.shift["t"][0]) > 0
+
+
+def test_finished_days_are_verified_after_a_restart(models):
+    sensors = Sensors(humidity=True, rain=True)
+    f = _forecaster(models, sensors, _history())
+    g = _restarted(models, f)
+    for x in (f, g):
+        x.verify_day(TODAY + 1, 35.0, -10.0, 1.0)
+    assert g.recal.day_shift["tmax"][0] == pytest.approx(f.recal.day_shift["tmax"][0], abs=1e-3)
+    assert g.recal.day_shift["tmax"][0] > 0 and g.recal.day_shift["tmin"][0] < 0
+    assert g.recal.day_logit[0] == pytest.approx(f.recal.day_logit[0], abs=1e-3)
+    assert g.recal.day_logit[0] > 0
+
+
+def test_saved_forecasts_from_other_models_are_dropped(models):
+    sensors = Sensors(humidity=True, rain=True)
+    f = _forecaster(models, sensors, _history())
+    saved = json.loads(json.dumps(f.dump_pending()))
+    assert len(saved["hours"]) == 1 and len(saved["days"]) == 2
+    for junk in ({**saved, "models": "0123456789ab"}, None, {"models": models.version, "hours": [{"ts": "x"}, 5]}):
+        g = Forecaster(models, LAT, LON, ELEV)
+        g.load_pending(junk)
+        assert g.dump_pending()["hours"] == [] and g.dump_pending()["days"] == []
+
+
+def test_issuing_the_same_hour_again_replaces_it(models):
+    """A restart within the hour issues it again; it must not be verified twice."""
+    sensors = Sensors(humidity=True, rain=True)
+    history = _history()
+    g = _restarted(models, _forecaster(models, sensors, history))
+    g.run_issue(history, NOW, FLAT_TIDE, 10.0, TODAY, sensors)
+    assert [i["ts"] for i in g.dump_pending()["hours"]] == [NOW]
+
+
 @pytest.mark.parametrize(
     ("kw", "icon"),
     [

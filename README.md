@@ -394,6 +394,8 @@ broken sensor cannot teach the forecast nonsense, and starts neutral.  It
 starts over when the models change (an update that retrains them): a
 correction learned for other models does not fit these.  The state, with the
 fingerprint of the models it belongs to, is in the diagnostics download.
+Forecasts still waiting for their hour or day are saved too, so a restart
+(or a day that ends while Home Assistant is down) costs no verification.
 
 The learning rates were chosen on 24 held-out stations on four continents plus
 the backyard one, replaying each as a fresh install every year: they help on
@@ -405,7 +407,9 @@ average and cost no station more than ~0.7 %.  Mean error change: temperature
 ### History
 
 The hourly history behind the inputs is kept for 30 days and persisted across
-restarts.  On a new install it is seeded from the recorder's long-term
+restarts (saved at most once an hour, always when Home Assistant stops and
+when the integration reloads; a restart mid-hour keeps the readings already
+in that hour at their full weight).  On a new install it is seeded from the recorder's long-term
 statistics (sensors with a `state_class`), so the forecast starts with weeks
 of history instead of none.  Every restart also fills, per hour, the channels
 the stored history lacks - a rain or solar sensor added later, or an upgrade -

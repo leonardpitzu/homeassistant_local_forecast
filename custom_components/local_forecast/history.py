@@ -59,6 +59,11 @@ class _Bin:
         self.n[key] = self.n.get(key, 0) + 1
         self.s[key] = self.s.get(key, 0.0) + value
 
+    def restore(self, key: str, mean: float, n: int) -> None:
+        """A saved mean of ``n`` readings, so later readings weigh what they should."""
+        self.n[key] = n
+        self.s[key] = mean * n
+
     def mean(self, key: str) -> float:
         n = self.n.get(key, 0)
         return self.s[key] / n if n else NAN
@@ -175,43 +180,54 @@ class HourlyHistory:
 
     # ------------------------------------------------------------------
     #  Persistence: [hour, t, td, ws, u, v, p, rain, solar, t_high, t_low]
+    #  The newest hour may still be filling: it also keeps how many
+    #  readings each mean holds, so a restart mid-hour does not let the
+    #  readings after it outweigh the ones before.
     # ------------------------------------------------------------------
 
-    def dump(self) -> list[list[float | None]]:
+    def dump(self) -> list[list[Any]]:
         def r(x: float, nd: int) -> float | None:
             return None if x != x else round(x, nd)
 
-        return [
-            [
-                h,
-                r(b.mean("t"), 2),
-                r(b.mean("td"), 2),
-                r(b.mean("ws"), 2),
-                r(b.mean("u"), 3),
-                r(b.mean("v"), 3),
-                r(b.mean("p"), 2),
-                r(b.mean("rain"), 2),
-                r(b.mean("solar"), 1),
-                r(b.hi, 2),
-                r(b.lo, 2),
-            ]  # fmt: skip
-            for h, b in sorted(self._bins.items())
-        ]
+        newest = max(self._bins, default=None)
+        rows: list[list[Any]] = []
+        for h, b in sorted(self._bins.items()):
+            row: list[Any] = [h, *(r(b.mean(k), nd) for k, nd in _SAVED), r(b.hi, 2), r(b.lo, 2)]
+            if h == newest:
+                row.append([b.n.get(k, 0) for k, _ in _SAVED])
+            rows.append(row)
+        return rows
 
     def load(self, rows: Any) -> None:
         self._bins.clear()
         if not isinstance(rows, list):
             return
-        keys = ("t", "td", "ws", "u", "v", "p", "rain", "solar")
         for row in rows:
             try:
                 if len(row) == 8:  # 2.0.0 kept a wet flag, not mm: the rain is unknown
                     row = [*row[:7], None, None, None, None]
-                h, *vals, hi, lo = row
+                counts = _counts(row)
+                h, *vals, hi, lo = row[:11]
                 b = _Bin()
-                for key, val in zip(keys, vals, strict=True):
-                    b.add(key, None if val is None else float(val))
+                for i, ((key, _), val) in enumerate(zip(_SAVED, vals, strict=True)):
+                    if val is not None:
+                        b.restore(key, float(val), max(1, counts[i]) if counts else 1)
                 b.extremes(None if hi is None else float(hi), None if lo is None else float(lo))
                 self._bins[int(h)] = b
             except (TypeError, ValueError):
                 continue
+
+
+# Saved channels and their decimals, in column order.
+_SAVED = (("t", 2), ("td", 2), ("ws", 2), ("u", 3), ("v", 3), ("p", 2), ("rain", 2), ("solar", 1))
+
+
+def _counts(row: list[Any]) -> list[int] | None:
+    """The readings behind each mean of a still-filling hour, if saved."""
+    if len(row) != 12:
+        return None
+    try:
+        counts = [int(n) for n in row[11]]
+    except (TypeError, ValueError):
+        return None
+    return counts if len(counts) == len(_SAVED) else None

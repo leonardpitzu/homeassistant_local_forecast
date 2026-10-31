@@ -7,7 +7,7 @@ coordinator; this module only shapes them for Home Assistant.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 
 from homeassistant.components.weather import (
@@ -24,6 +24,7 @@ from .coordinator import (
     ForecastResult,
     LocalForecastConfigEntry,
     LocalForecastCoordinator,
+    hours_after,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
         # ask, or every entry drifts by up to one refresh interval.
         return [
             Forecast(  # type: ignore[typeddict-unknown-key]
-                datetime=(data.generated + timedelta(hours=hf.hours_ahead)).isoformat(),
+                datetime=hours_after(data.generated, hf.hours_ahead).isoformat(),
                 condition=hf.condition,
                 native_temperature=hf.temperature,
                 humidity=hf.humidity,
@@ -153,7 +154,7 @@ class LocalForecastWeather(CoordinatorEntity[LocalForecastCoordinator], WeatherE
             date = datetime.fromordinal(day.date).date()
             # Humidity and pressure have no daily model: the forecast hours that
             # fall on the day stand for it.
-            near = [h for h in data.hourly if (now + timedelta(hours=h.hours_ahead)).date() == date]
+            near = [h for h in data.hourly if hours_after(now, h.hours_ahead).date() == date]
             near = near or data.hourly[-1:]
             # Today is dated now, so the card never treats it as past; the
             # other days at noon.

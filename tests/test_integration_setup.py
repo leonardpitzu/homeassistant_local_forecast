@@ -7,13 +7,13 @@ instance and assert on the published states.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE, Platform
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, EVENT_HOMEASSISTANT_FINAL_WRITE, STATE_UNAVAILABLE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
@@ -551,6 +551,113 @@ async def test_forecast_hours_are_continuous_and_complete(hass, sensors):
             "clear-night", "cloudy", "fog", "lightning-rainy", "partlycloudy", "pouring",
             "rainy", "snowy", "snowy-rainy", "sunny", "windy",
         }  # fmt: skip
+
+
+async def test_hours_stay_an_hour_apart_when_the_clocks_change(hass, sensors, freezer):
+    """Clocks go back at 01:00 UTC on 25 Oct 2026 in Bucharest: no hour skipped or repeated."""
+    await hass.config.async_set_time_zone("Europe/Bucharest")
+    freezer.move_to(datetime(2026, 10, 24, 22, 10, tzinfo=dt_util.UTC))
+    await _setup(hass, _entry(hass))
+    result = await hass.services.async_call(
+        "weather", "get_forecasts", {"entity_id": WEATHER, "type": "hourly"}, blocking=True, return_response=True
+    )
+    stamps = [datetime.fromisoformat(h["datetime"]) for h in result[WEATHER]["forecast"]]
+    assert [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:], strict=False)] == [3600] * 23
+    assert stamps[0].utcoffset() != stamps[-1].utcoffset()
+    meteogram = hass.states.get("sensor.local_weather_forecast_hourly_forecast").attributes["forecast"]
+    assert [datetime.fromisoformat(h["datetime"]) for h in meteogram] == stamps
+
+
+async def test_a_stop_saves_what_is_awaiting_verification(hass, sensors, hass_storage):
+    """Home Assistant stops long before the save interval: the save is written anyway."""
+    entry = _entry(hass)
+    await _setup(hass, entry)
+    coordinator = entry.runtime_data
+    assert f"{DOMAIN}.test.forecast" not in hass_storage
+
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_FINAL_WRITE)
+    await hass.async_block_till_done()
+
+    saved = hass_storage[f"{DOMAIN}.test.forecast"]["data"]
+    assert saved["date"] == coordinator.forecaster.issue.local_date
+    assert [h["ts"] for h in saved["pending"]["hours"]] == [coordinator.forecaster.issue.ts]
+    assert len(saved["pending"]["days"]) == 2
+    assert saved["history"] and saved["recal"]["models"] == saved["pending"]["models"]
+
+
+async def test_a_reload_saves_first(hass, sensors, hass_storage):
+    """Changing options reloads the entry; the new one must read what the old one learned."""
+    entry = _entry(hass)
+    await _setup(hass, entry)
+    issue = entry.runtime_data.forecaster.issue
+    assert f"{DOMAIN}.test.forecast" not in hass_storage
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    saved = hass_storage[f"{DOMAIN}.test.forecast"]["data"]
+    assert [h["ts"] for h in saved["pending"]["hours"]] == [issue.ts]
+    assert saved["date"] == issue.local_date
+    assert hass_storage[f"{DOMAIN}.test.pressure"]["data"]["samples"]
+
+
+async def test_rest_of_today_counts_real_hours_on_a_clock_change_day(hass, sensors, freezer):
+    """01:00 summer time on 25 Oct 2026 in Bucharest: 24 real hours to midnight, not 23."""
+    await hass.config.async_set_time_zone("Europe/Bucharest")
+    freezer.move_to(datetime(2026, 10, 24, 22, 40, tzinfo=dt_util.UTC))  # issue hour 22:00 UTC = 01:00 EEST
+    forecaster = sys.modules["custom_components.local_forecast.forecast"].Forecaster
+    seen = []
+    original = forecaster.run_issue
+
+    def spy(self, history, ts, tide, hours_to_midnight, *args):
+        seen.append(hours_to_midnight)
+        return original(self, history, ts, tide, hours_to_midnight, *args)
+
+    with patch.object(forecaster, "run_issue", spy):
+        await _setup(hass, _entry(hass))
+    assert seen == [24.0]
+
+
+async def test_a_restart_restores_what_is_awaiting_verification(hass, sensors, hass_storage, freezer):
+    """The saved date and forecasts come back, so the day that ended while stopped is verified."""
+    freezer.move_to(datetime.fromtimestamp(1.79e9, dt_util.UTC))
+    version = sys.modules["custom_components.local_forecast.model"].ModelSet.load().version
+    issue = 1.79e9 - 1.79e9 % 3600 - 3600
+    today = dt_util.as_local(datetime.fromtimestamp(issue, dt_util.UTC)).date()
+    yesterday = today.toordinal() - 1
+    # Yesterday was 30 °C all day; an hour belongs to the day it ends in.
+    start = int(dt_util.start_of_local_day(today - timedelta(days=1)).timestamp())
+    end = int(dt_util.start_of_local_day(today).timestamp())
+    row = [30.0, None, None, None, None, 1013.0, None, None, 30.0, 30.0]
+    history = [[h, *row] for h in range(start + 3600, end + 1, 3600)]
+    hourly = {
+        "ts": issue - 3600,
+        "t0": 18.0,
+        "td0": 10.0,
+        "verified_to": 0,
+        "solar_hours": [12.0] * 25,
+        "raw": {"t": [None] + [0.5] * 24, "wet": [None] + [0.1] * 24},
+    }
+    hass_storage[f"{DOMAIN}.test.forecast"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"{DOMAIN}.test.forecast",
+        "data": {
+            "history": history,
+            "pending": {"models": version, "hours": [hourly], "days": [[yesterday, 1, 18.0, 4.0, -6.0, 0.3]]},
+            "date": yesterday,
+        },
+    }
+    entry = _entry(hass)
+    await _setup(hass, entry)
+    forecaster = entry.runtime_data.forecaster
+    pending = forecaster.dump_pending()
+    assert [h["ts"] for h in pending["hours"]] == [issue - 3600, forecaster.issue.ts]
+    assert pending["hours"][0]["verified_to"] == 1  # the restored forecast was verified on its next hour
+    # yesterday's saved forecast (high 22, low 12) met its 30 °C day
+    assert [d[:2] for d in pending["days"]] == [[today.toordinal() + 1, 1], [today.toordinal() + 2, 2]]
+    assert forecaster.recal.day_shift["tmax"][0] > 0 and forecaster.recal.day_shift["tmin"][0] > 0
+    assert entry.runtime_data._local_date == forecaster.issue.local_date == today.toordinal()
 
 
 async def test_diagnostics_report_the_learned_tide(hass, sensors, hass_client):

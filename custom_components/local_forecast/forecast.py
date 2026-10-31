@@ -188,7 +188,7 @@ class Forecaster:
         self.issue: Issue | None = None
         self._pending: list[Issue] = []  # issues waiting to be verified
         # Latest forecast made for each (local date, days ahead): verified once
-        # that date is over.  Not persisted; a restart only skips a day.
+        # that date is over.  Both are persisted (dump_pending).
         self._day_snaps: dict[tuple[int, int], tuple[float, dict[str, float]]] = {}
 
     # ------------------------------------------------------------------
@@ -240,8 +240,9 @@ class Forecaster:
                 self._day_snaps[(local_date + offset, offset)] = (issue.t0, raw)
         self._day_snaps = {k: v for k, v in self._day_snaps.items() if k[0] >= local_date - 1}
         self.issue = issue
+        # A restart within the hour issues it again: the new one replaces the saved one.
+        self._pending = [i for i in self._pending if i.ts != ts and ts - i.ts <= LEADS * _HOUR]
         self._pending.append(issue)
-        self._pending = [i for i in self._pending if ts - i.ts <= LEADS * _HOUR]
         return issue
 
     def fog_unlikely(self) -> bool:
@@ -418,7 +419,8 @@ class Forecaster:
         return out
 
     # ------------------------------------------------------------------
-    #  Persistence of the self-correction
+    #  Persistence: the self-correction, and the forecasts still waiting
+    #  to be verified (a restart must not cost their lesson)
     # ------------------------------------------------------------------
 
     def dump(self) -> dict:
@@ -428,3 +430,80 @@ class Forecaster:
         """Restore the self-correction, unless it was learned on other models."""
         if isinstance(data, dict) and data.get("models") == self.models.version:
             self.recal.load(data)
+
+    def dump_pending(self) -> dict:
+        """What verify() and verify_day() still need: the raw forecasts not yet verified.
+
+        Called from the event loop while an issue may be running in the
+        executor, so it reads copies.
+        """
+        pending, day_snaps = list(self._pending), list(self._day_snaps.items())
+        return {
+            "models": self.models.version,
+            "hours": [
+                {
+                    "ts": i.ts,
+                    "t0": _num(i.t0),
+                    "td0": _num(i.td0),
+                    "verified_to": i.verified_to,
+                    "solar_hours": [_num(v) for v in i.solar_hours],
+                    "raw": {k: [_num(v) for v in i.raw[k]] for k in _VERIFIED_HOURLY if k in i.raw},
+                }
+                for i in pending
+            ],
+            "days": [
+                [date, offset, _num(t0), *(_num(raw.get(k, math.nan)) for k in _VERIFIED_DAILY)]
+                for (date, offset), (t0, raw) in day_snaps
+            ],
+        }
+
+    def load_pending(self, data: object) -> None:
+        """Restore dump_pending(), unless it was forecast by other models."""
+        if not isinstance(data, dict) or data.get("models") != self.models.version:
+            return
+        for item in data.get("hours") or []:
+            try:
+                raw = {k: [_float(v) for v in item["raw"][k]] for k in _VERIFIED_HOURLY if k in item["raw"]}
+                issue = Issue(
+                    ts=int(item["ts"]),
+                    local_date=0,  # not needed to verify
+                    t0=_float(item["t0"]),
+                    td0=_float(item["td0"]),
+                    p0=math.nan,
+                    raw=raw,
+                    verified_to=int(item["verified_to"]),
+                    solar_hours=[_float(v) for v in item["solar_hours"]],
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            n = LEADS + 1
+            if (
+                issue.t0 == issue.t0
+                and {"t", "wet"} <= raw.keys()
+                and all(len(v) == n for v in raw.values())
+                and len(issue.solar_hours) == n
+                and 0 <= issue.verified_to <= LEADS
+            ):
+                self._pending.append(issue)
+        for row in data.get("days") or []:
+            try:
+                date, offset, t0, *vals = row
+                key = (int(date), int(offset))
+                snap = (_float(t0), dict(zip(_VERIFIED_DAILY, map(_float, vals), strict=True)))
+            except (TypeError, ValueError):
+                continue
+            if key[1] in (1, 2) and snap[0] == snap[0]:
+                self._day_snaps[key] = snap
+
+
+# What verification reads back from a saved forecast.
+_VERIFIED_HOURLY = ("t", "td", "ws", "wet")
+_VERIFIED_DAILY = ("tmax", "tmin", "wetday")
+
+
+def _num(x: float) -> float | None:
+    return None if x != x else round(x, 4)
+
+
+def _float(x: object) -> float:
+    return math.nan if x is None else float(x)  # type: ignore[arg-type]

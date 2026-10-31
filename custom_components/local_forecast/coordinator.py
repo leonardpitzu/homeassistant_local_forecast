@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 import logging
+import math
 import time
 from typing import Any, Final
 
@@ -131,6 +132,12 @@ _BEAUFORT_THRESHOLDS: Final = (
 _SEA_LEVEL_MIN: Final = 870.0
 _SEA_LEVEL_MAX: Final = 1090.0
 
+# The history, the self-correction and the forecasts awaiting verification are
+# saved at most this often (a save is ~180 kB); a pending save is always written
+# when Home Assistant stops, so a restart loses nothing.  A power cut loses at
+# most this much learning; the hours themselves come back from the recorder.
+_SAVE_EVERY_S: Final = 3600
+
 
 def _beaufort(wind_ms: float) -> int:
     """Convert wind speed in m/s to Beaufort scale (0-12)."""
@@ -207,7 +214,8 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         self._forecast_store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.forecast"
         )
-        self._local_date: int | None = None
+        self._save_asked = -math.inf  # monotonic time of the last save request
+        self._local_date: int | None = None  # local date of the last issue
 
         # Sample timestamps must be monotonic — the history buffer is bisected
         # on them — but also comparable to recorder timestamps, so anchor a
@@ -230,6 +238,19 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         if (saved := await self._forecast_store.async_load()) and isinstance(saved, dict):
             self.history.load(saved.get("history"))
             self.forecaster.load(saved.get("recal"))
+            self.forecaster.load_pending(saved.get("pending"))
+            if type(date := saved.get("date")) is int:
+                self._local_date = date  # days that ended while stopped are still verified
+
+    async def async_shutdown(self) -> None:
+        """Save everything now on unload: a reload reads it straight back.
+
+        (When Home Assistant stops, the store writes any pending save itself.)
+        """
+        await super().async_shutdown()
+        await self._store.async_save(self._pressure_data())
+        if self.forecaster is not None:
+            await self._forecast_store.async_save(self._forecast_data())
 
     @callback
     def async_track_sources(self, entry: ConfigEntry) -> None:
@@ -263,7 +284,31 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         if not self._has_data:
             return None
         await self._async_issue_if_due()
+        self._schedule_save()
         return self._run_forecast()
+
+    @callback
+    def _schedule_save(self) -> None:
+        """Ask for a save unless one asked for recently is still to come.
+
+        The store writes whatever is current when the save runs, and writes a
+        pending save when Home Assistant stops.  Asking again every refresh
+        would keep pushing the write back, so ask once per interval.
+        """
+        if self.forecaster is None or time.monotonic() - self._save_asked < _SAVE_EVERY_S:
+            return
+        self._save_asked = time.monotonic()
+        self._forecast_store.async_delay_save(self._forecast_data, _SAVE_EVERY_S)
+
+    def _forecast_data(self) -> dict[str, Any]:
+        forecaster = self.forecaster
+        assert forecaster is not None
+        return {
+            "history": self.history.dump(),
+            "recal": forecaster.dump(),
+            "pending": forecaster.dump_pending(),
+            "date": self._local_date,
+        }
 
     # ------------------------------------------------------------------
     #  Recorder backfill
@@ -570,7 +615,8 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         local = dt_util.as_local(datetime.fromtimestamp(issue, UTC))
         local_date = local.date().toordinal()
         midnight = dt_util.start_of_local_day(local.date() + timedelta(days=1))
-        hours_to_midnight = (midnight - local).total_seconds() / 3600.0
+        # Real hours: subtracting two local times counts clock hours (23 or 25 on clock-change days).
+        hours_to_midnight = (midnight.timestamp() - issue) / 3600.0
         finished = self._finished_days(local_date)
         sensors = self._sensors()
 
@@ -582,7 +628,6 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
 
         await self.hass.async_add_executor_job(work)
         self._local_date = local_date
-        self._forecast_store.async_delay_save(lambda: {"history": self.history.dump(), "recal": forecaster.dump()}, 300)
 
     def _finished_days(self, local_date: int) -> list[tuple[int, float, float, float | None]]:
         """Calendar days completed since the last issue: (date, high, low, wet)."""
@@ -652,7 +697,7 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         daily: list[DayForecast] = []
         if self.forecaster is not None:
             hourly = self.forecaster.hours(now_local.timestamp(), self.tide.hpa_at, sensors, bearing, FORECAST_HOURS)
-            local = [now_local + timedelta(hours=h.hours_ahead) for h in hourly]
+            local = [hours_after(now_local, h.hours_ahead) for h in hourly]
             daily = self.forecaster.days(
                 sensors,
                 s.humidity if sensors.humidity else None,
@@ -699,9 +744,10 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         now = time.time()
         if self.pressure_history.record(now, pressure):
             self.tide.learn(now, pressure, temperature)
-            self._store.async_delay_save(
-                lambda: {"samples": self.pressure_history.dump(), "tide": self.tide.dump()}, 60
-            )
+            self._store.async_delay_save(self._pressure_data, 60)
+
+    def _pressure_data(self) -> dict[str, Any]:
+        return {"samples": self.pressure_history.dump(), "tide": self.tide.dump()}
 
     def _apparent_temperature(self) -> float:
         """Feels-like temperature — wind chill or heat index."""
@@ -777,6 +823,15 @@ class LocalForecastCoordinator(DataUpdateCoordinator[ForecastResult | None]):
         return 45.0  # fallback: assume mid-sky
 
 
+def hours_after(local: datetime, hours: float) -> datetime:
+    """Local time ``hours`` real hours later.
+
+    ``local + timedelta`` adds clock hours: where the clocks change it skips or
+    repeats an hour and labels every later one an hour off.
+    """
+    return (local.astimezone(UTC) + timedelta(hours=hours)).astimezone(local.tzinfo)
+
+
 def _hourly_dicts(hourly: list[HourForecast], generated: datetime) -> list[dict[str, Any]]:
     """Hourly forecast as plain dicts for the meteogram sensor attribute.
 
@@ -786,7 +841,7 @@ def _hourly_dicts(hourly: list[HourForecast], generated: datetime) -> list[dict[
     """
     return [
         {
-            "datetime": (generated + timedelta(hours=hf.hours_ahead)).isoformat(),
+            "datetime": hours_after(generated, hf.hours_ahead).isoformat(),
             "condition": hf.condition,
             "temperature": hf.temperature,
             "humidity": hf.humidity,
