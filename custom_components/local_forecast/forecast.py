@@ -73,10 +73,12 @@ HEAVY_DAY_MM = 25.0  # a wet day this heavy shows as pouring
 WARM_HOURS = range(13, 18)
 COLD_HOURS = range(4, 9)
 
-# The estimator calls fog on saturated, calm air; at the airports that alone is
-# fog 8 % of the time.  When the fog model gives the next hour under 5 %, the
-# call is vetoed: 60 % of the false fog goes, three in four real fogs stay.
-FOG_VETO = 0.05
+# The estimator calls fog on saturated, calm air, which alone shows fog 8x as
+# often as it happens (wet overcast is saturated and calm too).  So the current
+# fog also needs the fog model's next-hour chance at the hourly fog icon's
+# threshold, and "now" never says fog while the next hour says cloudy.  Out of
+# fold at 230 airports: fog shown 0.9 % of hours against 1.5 % seen (a 5 % veto
+# showed 5.0 %), right when called 27 % (15 %), real fog caught 15 % (50 %).
 
 
 @dataclass
@@ -246,9 +248,9 @@ class Forecaster:
         return issue
 
     def fog_unlikely(self) -> bool:
-        """Whether the fog model vetoes a fog call for the current hour."""
+        """Whether the fog model's next-hour chance is below the hourly fog icon's threshold."""
         issue = self.issue
-        return issue is not None and "fog" in issue.leads and issue.leads["fog"][1] < FOG_VETO
+        return issue is not None and "fog" in issue.leads and issue.leads["fog"][1] < HOURLY_ICONS.fog
 
     # ------------------------------------------------------------------
     #  Self-correction: verify what has been observed since

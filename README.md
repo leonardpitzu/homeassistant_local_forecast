@@ -225,11 +225,13 @@ $$T_d = \frac{243.04 \cdot \ln\!\left(\frac{RH}{100}\right) + \frac{17.625 \cdot
 
 Fog is classified when dew-point depression $T - T_d < 1.5$ C and wind speed
 $< 3$ m/s.  On its own that rule calls fog far too often: at the training
-airports it says fog 8 % of the time against 1.5 % observed (wet overcast is
-saturated and calm too).  So when the fog model gives the next hour under 5 %,
-the call is vetoed: 60 % of the false fog goes, three in four real fogs stay.
-A stricter veto removes more false fog but starts hiding real fog; one real fog
-in four is the price kept.
+airports it shows fog 8 times as often as it happens (wet overcast is saturated
+and calm too).  So the call also needs the fog model's next-hour chance at the
+hourly fog icon's threshold (20 %), and the current condition never says fog
+while the next hour says cloudy.  At the airports fog then shows 0.9 % of the
+time against 1.5 % observed, and is right 27 % of the time it shows.  The cost:
+only one real fog in seven is shown; the rest show as cloudy.  One station
+cannot see visibility, and saturated overcast looks the same as fog to it.
 
 ### Frontal detection
 

@@ -8,7 +8,7 @@ import struct
 import pytest
 
 from local_forecast.features import DAILY, HOURLY
-from local_forecast.forecast import Forecaster, Observed, Sensors, condition
+from local_forecast.forecast import HOURLY_ICONS, Forecaster, Observed, Sensors, condition
 from local_forecast.history import HourlyHistory
 from local_forecast.model import DAILY_TARGETS, HOURLY_TARGETS, Model, ModelSet
 
@@ -261,6 +261,20 @@ def test_issuing_the_same_hour_again_replaces_it(models):
     g = _restarted(models, _forecaster(models, sensors, history))
     g.run_issue(history, NOW, FLAT_TIDE, 10.0, TODAY, sensors)
     assert [i["ts"] for i in g.dump_pending()["hours"]] == [NOW]
+
+
+def test_current_fog_needs_the_next_hour_fog_icon(models):
+    """Fog now only when the next hour would show fog too, never fog then cloudy."""
+    f = _forecaster(models, Sensors(humidity=True, wind=True, wind_direction=True), _history())
+    fog = f.issue.leads["fog"]
+    fog[1] = HOURLY_ICONS.fog - 0.01
+    assert f.fog_unlikely()
+    fog[1] = HOURLY_ICONS.fog
+    assert not f.fog_unlikely()
+    assert condition(rain=0.0, thunder=0.0, fog=fog[1], cloud=0.9, heavy=False, temperature=8.0,
+                     humidity=97.0, wind=0.5, daytime=False) == "fog"  # fmt: skip
+    f.issue = None  # no models yet: the estimator's call stands
+    assert not f.fog_unlikely()
 
 
 @pytest.mark.parametrize(
